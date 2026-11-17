@@ -1,0 +1,13 @@
+*.key
+*.pem
+*.der
+*.oer
+certs/
+keys/
+secrets/
+.env
+logs/
+*.log
+*.pcap
+__pycache__/
+.venv/
