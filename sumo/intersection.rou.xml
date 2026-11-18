@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 차량 2대: obu1은 서→동, obu2는 남→북. 서로 교차하는 방향 -->
+<routes>
+    <vType id="car" length="4.5" maxSpeed="13.89" accel="2.6" decel="4.5"/>
+    <vehicle id="obu1" type="car" depart="0" color="0,0,1">
+        <route edges="W2C C2E"/>
+    </vehicle>
+    <vehicle id="obu2" type="car" depart="3" color="1,0,0">
+        <route edges="S2C C2N"/>
+    </vehicle>
+</routes>
