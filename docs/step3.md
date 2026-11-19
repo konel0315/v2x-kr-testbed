@@ -1,4 +1,4 @@
-# 3단계 + 3-1단계: RSU의 SPaT·MAP 방송과 협력주행 (서명 없음)
+# 3단계 + 3-1단계: RSU의 SPaT·MAP 방송과 협력주행
 
 ## 결과: 통과 (2026-11-19, 실제 V2X-Hub 8.1.0)
 - OBU-02가 V2X-Hub가 만든 MAP을 받아 자기 차로(3)와 정지선 거리를 계산
@@ -23,13 +23,11 @@
 - SPaT를 1초 넘게 못 받으면 신호를 UNKNOWN으로 보고 감속·정지
 
 ## 실행
-    bash scripts/run.sh --coop        # 실제 V2X-Hub (설정: v2xhub-config/plugins.md)
-    bash scripts/run.sh --mock --coop # V2X-Hub 없이 (V2X-Hub를 먼저 꺼야 함)
+    bash scripts/run.sh --coop        # V2X-Hub 플러그인 설정: v2xhub-config/plugins.md
 
 ## 겪은 문제
 | 증상 | 원인 | 해결 |
 | --- | --- | --- |
-| --mock에서 차가 신호를 무시하고 통과 | V2X-Hub가 6053·26789 포트를 써서 흉내 프로그램이 죽음, OBU는 정보 없이 신호 무시 | run.sh가 V2X-Hub 실행 여부 검사, OBU는 MAP 수신 전 SUMO 신호 준수 |
 | make_map.py PermissionError | ~/v2xhub_data/download가 Docker(root) 소유 | sudo로 MAP 폴더 생성 후 chown |
 | OBU가 MAP 0개 | MAP 플러그인이 기본 파일 경로를 읽은 채 실행 | 설정 저장 후 Disable → 다시 켜기 |
 | logs/*.out이 실행 중 비어 있음 | Python 출력 버퍼링 | run.sh에서 python3 -u |

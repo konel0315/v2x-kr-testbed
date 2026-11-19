@@ -1,7 +1,9 @@
-"""RSU 송신부: V2X-Hub ImmediateForward 출력(RSU 4.1 형식, UDP 1516)을 받아
-WSMP로 감싸 가상 무선으로 방송한다.
+"""RSU 송신 서명기: V2X-Hub ImmediateForward 출력(RSU 4.1 형식, UDP 1516)을 받아
+IEEE 1609.2로 서명하고 WSMP로 감싸 가상 무선으로 방송한다.
+(V2X-Hub는 서명하지 않으므로 이 서명기가 뒤에서 서명한다.)
 
-3단계: 서명 없이 방송 (5단계에서 1609.2 서명을 이 자리에 넣는다).
+인증서는 시작할 때 CA에서 받는다 (RSU-01, 권한 SPaT·MAP).
+--cert-duration N: 인증서를 N초짜리로 받는다 (7단계 '만료' 시험용)
 
 V2X-Hub ImmediateForward 설정에서 address를 host.docker.internal, port를 1516으로 둔다.
 사용법: python3 rsu-signer/signer.py
@@ -14,6 +16,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from common import psid, wsmp  # noqa: E402
+from common.identity import Identity  # noqa: E402
 from common.radio import Radio  # noqa: E402
 from common.v2xlog import V2XLog  # noqa: E402
 
@@ -31,12 +34,15 @@ def parse_rsu41(text):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--listen", type=int, default=1516, help="ImmediateForward 수신 포트")
+    ap.add_argument("--cert-duration", type=int, default=None, help="인증서 유효 시간(초), 만료 시험용")
     args = ap.parse_args()
+    ident = Identity("RSU-01", duration_s=args.cert_duration)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", args.listen))
     radio = Radio("RSU-01-signer")
     log = V2XLog("RSU-01-signer")
-    print(f"[signer] V2X-Hub ImmediateForward(UDP {args.listen}) -> 가상 무선 방송 (서명 없음)")
+    print(f"[signer] V2X-Hub ImmediateForward(UDP {args.listen}) -> 1609.2 서명 -> 가상 무선 방송. "
+          f"인증서 PSID {[hex(p) for p in ident.cert.psids]}, 유효 {int(ident.cert.end - ident.cert.start)}초")
 
     count, last_report = {}, time.monotonic()
     while True:
@@ -54,8 +60,8 @@ def main():
             p = psid.MAP          # ImmediateForward 기본 설정은 MAP도 0x8002라서 바로잡음
         if not payload[:2] in (b"\x00\x12", b"\x00\x13"):
             print(f"[signer] 경고: Payload가 J2735 MessageFrame이 아님 ({payload[:4].hex()})")
-        radio.send(wsmp.encode(p, payload))
-        log.write(mtype, "RSU-01", "SENT", t_start=t0)
+        radio.send(wsmp.encode(p, ident.sign(payload, p)))       # 서명해서 방송
+        log.write(mtype, "RSU-01", "SENT", auth_status="SIGNED", t_start=t0)
         count[mtype] = count.get(mtype, 0) + 1
         if time.monotonic() - last_report > 5:
             print(f"[signer] 방송한 메시지: {count}")

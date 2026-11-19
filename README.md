@@ -51,9 +51,6 @@ common/                  공통 부품
   intersection.py        MAP·SPaT 해석 (차로, 정지선 거리, 신호 색)
   radio.py, v2xlog.py    가상 무선 접속, 메시지별 JSON 로그
 sumo/                    사거리 1개(판교 부근 가상 좌표), 차량 2대
-tests/attack.py          공격 흉내 (가짜 초록불 SPaT)
-tests/summary.py         로그 집계
-tests/mock_v2xhub.py     V2X-Hub 흉내 (V2X-Hub 없이 코드 시험용, 결과 측정용 아님)
 scripts/run.sh           전체 실행
 scripts/setup_ubuntu.sh  개발 환경 설치
 scripts/build_j2735.sh   SAE J2735 ASN.1 → Python 변환기
@@ -94,11 +91,6 @@ bash scripts/run.sh --coop
 | 명령 | 용도 |
 | --- | --- |
 | `bash scripts/run.sh --coop` | 정상 실행: V2X로 받은 신호만 보고 협력주행 |
-| `bash scripts/run.sh --coop --no-verify` | 검증 끔 (비교 시험용) |
-| `bash scripts/run.sh --coop --rsu-cert 25` | RSU 인증서 25초 (만료 시험용) |
-| `bash scripts/run.sh --mock --coop` | V2X-Hub 없이 흉내로 실행 (V2X-Hub를 먼저 꺼야 함) |
-| `python3 tests/attack.py --mode unsigned` | 가짜 초록불 공격 (다른 터미널에서). 모드: unsigned, tamper, no-permission, unknown-ca |
-| `python3 tests/summary.py` | 노드별 ACCEPT·REJECT 집계 |
 | `sumo-gui -c sumo/intersection.sumocfg` | SUMO 화면만 보기 (V2X 없음) |
 | 브라우저 `https://127.0.0.1` | V2X-Hub 웹 관리 화면 (아이디 v2xadmin) |
 | `cd ~/V2X-Hub/configuration && docker compose stop` | V2X-Hub 끄기 |
@@ -116,7 +108,7 @@ bash scripts/run.sh --coop
 | 3 | 유효기간 | CERT_EXPIRED |
 | 4 | 발급 체인: 신뢰하는 루트까지 이어지는가 | UNKNOWN_ISSUER |
 
-시험 방법과 결과: [docs/step4-7.md](docs/step4-7.md)
+구현 설명: [docs/step4-6.md](docs/step4-6.md)
 
 ## 단계별 기록
 
@@ -126,7 +118,7 @@ bash scripts/run.sh --coop
 | 1 | V2X-Hub BSM 수신 | [docs/step1.md](docs/step1.md) |
 | 2 | OBU 2대 BSM 전송 | [docs/step2.md](docs/step2.md) |
 | 3, 3-1 | RSU SPaT·MAP 방송, 협력주행 | [docs/step3.md](docs/step3.md) |
-| 4~7 | CA, 서명·검증, 시험 | [docs/step4-7.md](docs/step4-7.md) |
+| 4~6 | CA, 서명·검증 | [docs/step4-6.md](docs/step4-6.md) |
 
 ## 단순화한 점과 2차 과제
 
