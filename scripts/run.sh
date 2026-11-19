@@ -16,23 +16,23 @@ start() { local name=$1; shift; "$@" > "logs/$name.out" 2>&1 & PIDS+=($!); }
 cleanup() { echo; echo "종료 중..."; kill "${PIDS[@]}" 2>/dev/null; wait 2>/dev/null; }
 trap cleanup EXIT INT TERM
 
-start air      python3 radio/air.py
-start gateway  python3 rsu-gateway/gateway.py
-start signer   python3 rsu-signer/signer.py
+start air      python3 -u radio/air.py
+start gateway  python3 -u rsu-gateway/gateway.py
+start signer   python3 -u rsu-signer/signer.py
 if [ $MOCK = 1 ]; then
   if ss -uln | grep -qE ':(6053|26789)\b'; then
     echo "V2X-Hub가 켜져 있어 흉내 프로그램이 같은 포트(6053, 26789)를 쓸 수 없습니다."
     echo "먼저 V2X-Hub를 끄세요:  cd ~/V2X-Hub/configuration && docker compose stop"
     exit 1
   fi
-  python3 tsc/make_map.py --out logs/map_mock.txt > /dev/null || { echo "MAP 생성 실패 (pip install sumolib pyproj 했는지 확인)"; exit 1; }
-  start mock   python3 tests/mock_v2xhub.py --map logs/map_mock.txt
+  python3 -u tsc/make_map.py --out logs/map_mock.txt > /dev/null || { echo "MAP 생성 실패 (pip install sumolib pyproj 했는지 확인)"; exit 1; }
+  start mock   python3 -u tests/mock_v2xhub.py --map logs/map_mock.txt
 fi
 sleep 1
 start sumo     sumo-gui -c sumo/intersection.sumocfg --remote-port 8813 --num-clients 3 --start --delay 100
 sleep 2
-start tsc      python3 tsc/tsc.py --order 3
-start obu1     python3 obu/obu.py --vehicle obu1 --order 1 $COOP
-start obu2     python3 obu/obu.py --vehicle obu2 --order 2 $COOP
+start tsc      python3 -u tsc/tsc.py --order 3
+start obu1     python3 -u obu/obu.py --vehicle obu1 --order 1 $COOP
+start obu2     python3 -u obu/obu.py --vehicle obu2 --order 2 $COOP
 echo "실행 중 (협력주행 ${COOP:-끔}). SUMO 창에서 확인하세요. 아래는 OBU 화면입니다."
 tail -f logs/obu1.out logs/obu2.out logs/tsc.out
