@@ -11,3 +11,7 @@ logs/
 *.pcap
 __pycache__/
 .venv/
+
+# SAE J2735 (라이선스: 올리지 않음)
+asn/
+common/j2735_gen.py
