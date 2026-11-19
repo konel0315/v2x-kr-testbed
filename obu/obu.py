@@ -1,27 +1,30 @@
-"""가상 OBU (2단계): SUMO에서 내 차 상태를 읽어 J2735 BSM을 만들고 0.1초마다 보낸다.
+"""가상 OBU: SUMO 차량에 달린 단말기.
 
-사용법:
-    python3 obu/obu.py --vehicle obu1 --order 1
-    python3 obu/obu.py --vehicle obu2 --order 2
+  - 보내기: 내 차 상태로 J2735 BSM을 만들어 0.1초마다 가상 무선으로 방송
+  - 받기:   RSU가 방송한 SPaT(신호)·MAP(교차로 지도)을 받아 해석
+  - 협력주행(--coop): SUMO 신호등은 무시하고, V2X로 받은 신호만 보고 정지·출발
 
-SUMO는 미리 이렇게 띄워 둔다 (OBU 2대가 함께 붙도록 클라이언트 2개를 기다림):
-    sumo-gui -c sumo/intersection.sumocfg --remote-port 8813 --num-clients 2 --start
-
-2단계에서는 BSM을 V2X-Hub MessageReceiver(UDP 26789)로 바로 보낸다.
-(5~6단계에서 서명을 붙이고, 가상 무선과 RSU 검증 게이트웨이를 거치도록 바꾼다.)
+사용법 (SUMO는 --num-clients 3 으로 미리 실행. 3번째는 tsc):
+    python3 obu/obu.py --vehicle obu1 --order 1 [--coop]
+    python3 obu/obu.py --vehicle obu2 --order 2 [--coop]
 """
 import argparse
+import math
 import os
-import socket
 import sys
 import time
 
 import traci
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from common import j2735  # noqa: E402
+from common import intersection, j2735, psid, wsmp  # noqa: E402
+from common.radio import Radio  # noqa: E402
+from common.v2xlog import V2XLog  # noqa: E402
 
-STEP = 0.1  # SUMO 한 스텝 = 0.1초 = BSM 10 Hz
+STEP = 0.1              # SUMO 한 스텝 = 0.1초 = BSM 10 Hz
+DECEL = 3.0             # 정지할 때 쓸 감속도 (m/s^2)
+STOP_GAP = 2.0          # 정지선 몇 m 앞에서 설지
+SPAT_TIMEOUT = 1.0      # SPaT를 이 시간 넘게 못 받으면 신호를 모른다고 보고 감속
 
 
 def read_vehicle(vid):
@@ -39,42 +42,128 @@ def read_vehicle(vid):
     }
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--vehicle", required=True, help="SUMO 차량 ID (obu1, obu2)")
-    parser.add_argument("--order", type=int, required=True, help="TraCI 클라이언트 순서 (1, 2)")
-    parser.add_argument("--port", type=int, default=8813, help="SUMO TraCI 포트")
-    parser.add_argument("--dest", default="127.0.0.1:26789",
-                        help="BSM을 보낼 곳 (V2X-Hub MessageReceiver)")
-    args = parser.parse_args()
+class V2XView:
+    """V2X로 받은 정보만으로 만든 '내가 아는 교차로 상태'."""
 
-    dest_host, dest_port = args.dest.split(":")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    # 임시 ID 4바이트: obu1 -> b"OBU1"
+    def __init__(self, log):
+        self.map = None
+        self.signals = {}          # signalGroup -> (eventState, minEndTime)
+        self.spat_time = None
+        self.log = log
+        self.count = {"SPAT": 0, "MAP": 0}
+
+    def handle(self, wsm):
+        t0 = time.perf_counter()
+        try:
+            p, data = wsmp.decode(wsm)
+        except ValueError:
+            return
+        if p not in (psid.SPAT, psid.MAP):
+            return                                    # 다른 차의 BSM 등은 여기서 안 씀
+        try:
+            name, value = j2735.decode(data)
+        except Exception:
+            self.log.write(psid.NAMES[p], "?", "DROP", "DECODE_FAIL",
+                           decode_status="INVALID", t_start=t0)
+            return
+        if name == "MapData":
+            if self.map is None:
+                self.map = intersection.IntersectionMap(value)
+            self.count["MAP"] += 1
+            self.log.write("MAP", "RSU", "ACCEPT", t_start=t0)
+        elif name == "SPAT":
+            self.signals = intersection.spat_states(value)
+            self.spat_time = time.monotonic()
+            self.count["SPAT"] += 1
+            self.log.write("SPAT", "RSU", "ACCEPT", t_start=t0)
+
+    def my_signal(self, state):
+        """(차로 정보, 신호 색 'GREEN'/'YELLOW'/'RED'/'UNKNOWN') — 교차로 밖이면 (None, None)"""
+        if self.map is None:
+            return None, "UNKNOWN"
+        loc = self.map.locate(state["lat"], state["lon"], state["heading"])
+        if loc is None:
+            return None, None
+        if self.spat_time is None or time.monotonic() - self.spat_time > SPAT_TIMEOUT:
+            return loc, "UNKNOWN"
+        sig = self.signals.get(loc["signalGroup"])
+        return loc, intersection.color(sig[0]) if sig else "UNKNOWN"
+
+
+def decide_speed(loc, light, speed):
+    """협력주행 판단: 목표 속도(m/s)를 돌려준다. None이면 SUMO 기본 주행에 맡김."""
+    if loc is None:
+        return None                                   # 교차로 접근 중이 아님
+    d = loc["dist_to_stop"] - STOP_GAP
+    if light == "GREEN":
+        return None
+    if light == "YELLOW" and d < speed * speed / (2 * DECEL):
+        return None                                   # 이미 설 수 없는 거리면 통과
+    if light == "UNKNOWN" and d > 60:
+        return max(speed - 1.0 * STEP, 5.0)           # 신호를 모르면 천천히 감속
+    if d <= 0.5:
+        return 0.0
+    return min(speed, math.sqrt(2 * DECEL * d))       # 정지선 앞에서 멈추는 속도
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--vehicle", required=True, help="SUMO 차량 ID (obu1, obu2)")
+    ap.add_argument("--order", type=int, required=True, help="TraCI 클라이언트 순서 (1, 2)")
+    ap.add_argument("--port", type=int, default=8813, help="SUMO TraCI 포트")
+    ap.add_argument("--coop", action="store_true", help="V2X 신호만 보고 주행 (3-1단계)")
+    args = ap.parse_args()
+
+    name = args.vehicle.upper().replace("OBU", "OBU-0")       # obu1 -> OBU-01
     temp_id = args.vehicle.upper().encode()[:4].ljust(4, b"0")
+    radio = Radio(name)
+    log = V2XLog(name)
+    view = V2XView(log)
 
     traci.init(port=args.port, label=args.vehicle)
     traci.setOrder(args.order)
-    print(f"[{args.vehicle}] SUMO 연결됨, BSM 전송 대상 {args.dest}")
+    print(f"[{name}] SUMO 연결됨. 협력주행 {'켬' if args.coop else '끔'}")
 
-    seen = False
-    msg_cnt = 0
+    seen, msg_cnt, last_line, controlled, v2x_driving = False, 0, None, False, False
     while traci.simulation.getMinExpectedNumber() > 0:
         t0 = time.monotonic()
         traci.simulationStep()
+        for wsm in radio.recv_all():
+            view.handle(wsm)
         state = read_vehicle(args.vehicle)
         if state:
+            if args.coop and not v2x_driving and view.map is not None:
+                # MAP을 받은 뒤부터 SUMO 신호등을 보지 않게 함 (안전거리·가감속 한계만 지킴).
+                # MAP을 못 받았으면 정지선을 모르므로 SUMO 기본 주행(신호 준수)을 유지한다.
+                traci.vehicle.setSpeedMode(args.vehicle, 0b00111)
+                v2x_driving = True
+                print(f"[{name}] MAP 수신: 이제 V2X 신호만 보고 주행")
             seen = True
-            msg_cnt = (msg_cnt + 1) % 128        # J2735 MsgCount: 0..127 순환
+            msg_cnt = (msg_cnt + 1) % 128                     # J2735 MsgCount: 0..127 순환
             bsm = j2735.make_bsm(msg_cnt, temp_id, **state)
-            sock.sendto(bsm, (dest_host, int(dest_port)))
-            print(f"[{args.vehicle}] t={traci.simulation.getTime():5.1f}s "
-                  f"lat={state['lat']:.7f} lon={state['lon']:.7f} "
-                  f"speed={state['speed']:5.2f}m/s -> BSM {len(bsm)}B #{msg_cnt}")
+            radio.send(wsmp.encode(psid.BSM, bsm))
+
+            loc, light = view.my_signal(state)
+            target = decide_speed(loc, light, state["speed"]) if v2x_driving else None
+            if v2x_driving:
+                if target is not None:
+                    traci.vehicle.setSpeed(args.vehicle, target)
+                    controlled = True
+                elif controlled:
+                    traci.vehicle.setSpeed(args.vehicle, -1)  # 다시 SUMO 기본 주행
+                    controlled = False
+
+            where = (f"차로 {loc['laneID']} 정지선까지 {loc['dist_to_stop']:5.1f}m"
+                     if loc else "교차로 밖")
+            line = f"신호 {light or '-':7s} | {where}"
+            if line.split('|')[0] != (last_line or '|').split('|')[0] or int(traci.simulation.getTime() * 10) % 10 == 0:
+                print(f"[{name}] t={traci.simulation.getTime():5.1f}s 속도 {state['speed']:5.2f}m/s | "
+                      f"{line} | 받은 SPaT {view.count['SPAT']} MAP {view.count['MAP']}"
+                      + (f" | 목표속도 {target:.1f}" if target is not None else ""))
+            last_line = line
         elif seen:
-            print(f"[{args.vehicle}] 목적지 도착, 종료")
+            print(f"[{name}] 목적지 도착, 종료")
             break
-        # 실제 시간과 맞추기 (0.1초에 한 스텝)
         time.sleep(max(0.0, STEP - (time.monotonic() - t0)))
 
     traci.close()

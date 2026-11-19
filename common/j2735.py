@@ -61,3 +61,42 @@ def decode(frame):
     _MF.from_uper(frame)
     v = _MF.get_val()
     return v["value"][0], v["value"][1]
+
+
+def encode_frame(msg_id, name, value):
+    """임의의 J2735 메시지를 MessageFrame UPER로 인코딩한다."""
+    _MF.set_val({"messageId": msg_id, "value": (name, value)})
+    return _MF.to_uper()
+
+
+def moy_and_dsecond(t=None):
+    """(올해 몇 번째 분인지, 그 분 안의 ms) — SPaT·MAP 시각 필드용."""
+    t = time.time() if t is None else t
+    tm = time.gmtime(t)
+    moy = (tm.tm_yday - 1) * 1440 + tm.tm_hour * 60 + tm.tm_min
+    return moy, int(t * 1000) % 60000
+
+
+def time_mark(offset_s, t=None):
+    """지금부터 offset_s초 뒤를 J2735 TimeMark(현재 시각의 '분·초'를 0.1초 단위, 0..35999)로."""
+    t = (time.time() if t is None else t) + offset_s
+    return int(t * 10) % 36000
+
+
+def make_spat(intersection_id, states, revision=1, name=None):
+    """SPaT를 만든다 (시험용·공격 시나리오용. 정상 SPaT는 V2X-Hub가 만든다).
+
+    states: {signalGroup: (eventState 이름, 남은 초)}
+      eventState 예: "stop-And-Remain"(빨강), "protected-clearance"(노랑),
+                    "protected-Movement-Allowed"(초록)
+    """
+    moy, ds = moy_and_dsecond()
+    movements = [{"signalGroup": sg,
+                  "state-time-speed": [{"eventState": st,
+                                        "timing": {"minEndTime": time_mark(remain)}}]}
+                 for sg, (st, remain) in sorted(states.items())]
+    inter = {"id": {"id": intersection_id}, "revision": revision,
+             "status": (0, 16), "moy": moy, "timeStamp": ds, "states": movements}
+    if name:
+        inter["name"] = name
+    return encode_frame(SPAT_ID, "SPAT", {"intersections": [inter]})
