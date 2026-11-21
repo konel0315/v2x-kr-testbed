@@ -40,11 +40,11 @@ if ! grep -q "$VENV/bin/activate" "$HOME/.bashrc"; then
   echo "source $VENV/bin/activate" >> "$HOME/.bashrc"
 fi
 "$VENV/bin/pip" install --upgrade pip
-"$VENV/bin/pip" install traci cryptography asn1tools
+"$VENV/bin/pip" install traci cryptography pycrate sumolib pyproj
 
 echo "== 5. 확인"
 sumo --version | head -1
-"$VENV/bin/python" -c "import traci, cryptography, asn1tools; print('Python 라이브러리 OK')"
+"$VENV/bin/python" -c "import traci, cryptography, pycrate, sumolib, pyproj; print('Python 라이브러리 OK')"
 
 echo
 echo "완료. docker 권한을 적용하려면 Ubuntu를 닫았다 다시 연 뒤 'docker run --rm hello-world'로 확인하세요."
