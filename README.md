@@ -70,7 +70,7 @@ docs/                    계획서, 단계별 기록
    ```bash
    bash scripts/build_j2735.sh "<압축 푼 폴더>/V2X ASN.1 Module Collection 2024"
    ```
-   → `common/j2735_gen.py` 생성. SAE 라이선스 때문에 원본과 생성 파일은 Git에 올리지 않는다.
+   → `common/j2735_gen.py` 생성.
 4. V2X-Hub 8.1.0 설치: [docs/step1.md](docs/step1.md)
 5. V2X-Hub 플러그인 설정과 MAP 파일: [v2xhub-config/plugins.md](v2xhub-config/plugins.md)
 
