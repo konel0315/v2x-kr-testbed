@@ -66,7 +66,7 @@ docs/                    계획서, 단계별 기록
    source ~/.venv/v2x/bin/activate
    pip install traci cryptography pycrate sumolib pyproj
    ```
-3. **SAE J2735 파일**: SAE Mobilus(saemobilus.sae.org)에서 `J2735ASN_202409`를 받아(무료, 계정 필요) 압축을 푼 뒤
+3. **SAE J2735 파일**: SAE Mobilus(saemobilus.sae.org)에서 `J2735ASN_202409`를 받아(디스코드에 올려두었습니다) (무료, 계정 필요) 압축을 푼 뒤
    ```bash
    bash scripts/build_j2735.sh "<압축 푼 폴더>/V2X ASN.1 Module Collection 2024"
    ```
