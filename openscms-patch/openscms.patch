@@ -1,0 +1,288 @@
+diff --git a/aca/src/core_logic/build_certificates.rs b/aca/src/core_logic/build_certificates.rs
+index 9cd1412..479788a 100644
+--- a/aca/src/core_logic/build_certificates.rs
++++ b/aca/src/core_logic/build_certificates.rs
+@@ -51,14 +51,23 @@ pub async fn build_certificates(
+     Ok((certificates, lv_to_plv_maps))
+ }
+ 
++/// Clock skew allowance for the start of non-butterfly certificates
++const NON_BUTTERFLY_START_SLACK_SECONDS: u64 = 60;
++/// Validity of non-butterfly certificates (the bridge encodes the duration in years)
++const NON_BUTTERFLY_VALIDITY_YEARS: u16 = 1;
++
+ pub async fn build_non_butterfly_certificate(
+     exp_type: ExpansionType,
+     non_butterfly_request: NonButterflyRequest,
+     db: &DatabaseConnection,
+ ) -> Result<Certificate, GenCertificateError> {
+     log::debug!("Calculating validity");
+-    let certificate_validity_begin = calculate_certificate_validity_begin(0);
+-    let certificate_validity_duration = calculate_certificate_validity_duration();
++    // Non-butterfly certificates are valid from now (Time32) for one year.
++    let certificate_validity_begin = (scmscommon::get_current_time_seconds() as u64)
++        .saturating_sub(NON_BUTTERFLY_START_SLACK_SECONDS) as u32;
++    let certificate_validity_duration: u16 = NON_BUTTERFLY_VALIDITY_YEARS;
++    let app_psids = non_butterfly_request.get_app_psids();
++    log::debug!("Non-butterfly appPermissions PSIDs: {:?}", app_psids);
+ 
+     let req_id = 0;
+ 
+@@ -88,6 +97,7 @@ pub async fn build_non_butterfly_certificate(
+         certificate_type,
+         [0u8; 3],
+         0,
++        &app_psids,
+     )?;
+ 
+     log::debug!("Certificate generated successfully");
+@@ -167,6 +177,7 @@ async fn build_individual_certificate(
+         certificate_type,
+         [0u8; 3],
+         0,
++        &[],
+     )?;
+ 
+     log::debug!("Certificate generated successfully");
+diff --git a/deployment/values.yaml b/deployment/values.yaml
+index c856081..d6959a9 100644
+--- a/deployment/values.yaml
++++ b/deployment/values.yaml
+@@ -97,20 +97,25 @@ env:
+   PARAM_SCMSV3_OPTIONS: ""
+ 
+   PARAM_ECA_MAX_AGE: "1000"
+-  PARAM_ECA_MAX_REQS: "100"
++  PARAM_ECA_MAX_REQS: "10000"   # V2X testbed: every EE reaches the SCMS from one IP (port-forward)
+   PARAM_ECA_MAX_WAIT: "100"
+   PARAM_ECA_MIN_WAIT: "0"
+ 
+   PARAM_RA_ACPC_SUPPORT: "true"
+   PARAM_RA_BUTTERFLY_TYPE: "compact unified"
+-  PARAM_RA_MAX_AGE: "0"
++  PARAM_RA_MAX_AGE: "30"        # V2X testbed: allow 30 s between generationTime and reception
+   PARAM_RA_MAX_GEN_DELAY: "4000"
+   PARAM_RA_MAX_REQS: "100"
+   PARAM_RA_MAX_RELOAD_TIME: "0"
+   PARAM_RA_MIN_WAIT: "0"
+ 
++  # V2X testbed: PSIDs an EE may request per device type (comma separated, decimal or 0x hex).
++  # Unset or removed = no restriction. 0x20 BSM, 0x8002 SPaT, 0xE0000017 MAP.
++  RA_PSID_POLICY_OBU: "0x20"
++  RA_PSID_POLICY_RSU: "0x8002,0xE0000017"
++
+   PARAM_DOWNLOAD_MAX_AGE: "1000"
+-  PARAM_DOWNLOAD_MAX_REQS: "100"
++  PARAM_DOWNLOAD_MAX_REQS: "10000"  # V2X testbed: shared IP + download polling
+   PARAM_DOWNLOAD_MIN_WAIT: "0"
+ 
+   MIN_NUMBER_CERTS_RA: "1"
+diff --git a/oscms_bridge/src/bridge/aca_ee_cert_response.rs b/oscms_bridge/src/bridge/aca_ee_cert_response.rs
+index 5c8366e..6415dcb 100644
+--- a/oscms_bridge/src/bridge/aca_ee_cert_response.rs
++++ b/oscms_bridge/src/bridge/aca_ee_cert_response.rs
+@@ -57,6 +57,7 @@ pub fn issue_authorization_certificate(
+     certificate_type: CertificateType,
+     craca_id: [u8; 3],
+     crl_series: u16,
++    app_psids: &[u64],
+ ) -> Result<Vec<u8>, OscmsBridgeError> {
+     log::debug!(
+         "OSCMS-BRIDGE: Bridging ACA P-256 with SCMS type: {:?}",
+@@ -89,7 +90,12 @@ pub fn issue_authorization_certificate(
+         craca_id,
+         crl_series,
+         encoded_aca_ee_cert_response_spdu: encoded_aca_ee_cert_response_spdu_buffer,
++        app_psids: [0; 8],
++        app_psids_count: 0,
+     };
++    let psid_count = app_psids.len().min(args.app_psids.len());
++    args.app_psids[..psid_count].copy_from_slice(&app_psids[..psid_count]);
++    args.app_psids_count = psid_count;
+ 
+     // Call unsafe function to bridge ACA P-256
+ 
+@@ -175,6 +181,7 @@ mod tests {
+             certificate_type,
+             craca_id,
+             crl_series,
++            &[],
+         ) {
+             Ok(encoded_response) => {
+                 assert_ne!(encoded_response.len(), 0);
+diff --git a/oscms_bridge/src/bridge/ee_ra_cert_request.rs b/oscms_bridge/src/bridge/ee_ra_cert_request.rs
+index ba767a9..8490ebf 100644
+--- a/oscms_bridge/src/bridge/ee_ra_cert_request.rs
++++ b/oscms_bridge/src/bridge/ee_ra_cert_request.rs
+@@ -270,6 +270,8 @@ pub fn decode_certificate_request_spdu(
+         signing_expansion,
+         encryption_expansion,
+         encryption_key,
++        app_psids: [0; 8],
++        app_psids_count: 0,
+     };
+ 
+     // 2. Call handle_ee_ra_cert_request and handle result
+@@ -324,6 +326,10 @@ pub fn decode_certificate_request_spdu(
+             None
+         };
+ 
++        let psid_count = (args.app_psids_count as usize).min(args.app_psids.len());
++        let app_psids: Vec<u64> = args.app_psids[..psid_count].to_vec();
++        log::debug!("Requested PSIDs: {:?}", app_psids);
++
+         non_butterfly = Some(NonButterflyRequest {
+             vid,
+             verifying_key_raw,
+@@ -331,6 +337,7 @@ pub fn decode_certificate_request_spdu(
+             hash_id,
+             exp_type,
+             certificate_type,
++            app_psids,
+         });
+     } else {
+         caterpillar = Some(build_caterpillar(
+@@ -643,6 +650,7 @@ mod tests {
+                     hash_id: "66ef9cfa6709e04f".to_string(),
+                     exp_type: ExpansionType::NonButterflyEncrypted,
+                     certificate_type: CertificateType::Implicit,
++                    app_psids: n.as_ref().map(|r| r.app_psids.clone()).unwrap_or_default(),
+                 };
+                 assert!(n.unwrap().eq(&expected_out));
+             }
+@@ -675,6 +683,7 @@ mod tests {
+                     hash_id: "cc8c0478e69d4c4c".to_string(),
+                     exp_type: ExpansionType::NonButterflyEncrypted,
+                     certificate_type: CertificateType::Implicit,
++                    app_psids: n.as_ref().map(|r| r.app_psids.clone()).unwrap_or_default(),
+                 };
+                 assert!(n.unwrap().eq(&expected_out));
+             }
+diff --git a/ra/src/ra_endpoint/authorization_cert.rs b/ra/src/ra_endpoint/authorization_cert.rs
+index 3b59b8f..dba9b51 100644
+--- a/ra/src/ra_endpoint/authorization_cert.rs
++++ b/ra/src/ra_endpoint/authorization_cert.rs
+@@ -14,6 +14,7 @@
+ //
+ // SPDX-License-Identifier: Apache-2.0
+ 
++use crate::entities::sea_orm_active_enums::DeviceType;
+ use crate::entities::sea_orm_active_enums::RaRequestManagementRequestType;
+ use crate::entities::sea_orm_active_enums::Status;
+ use crate::persistence::caterpillar::CaterpillarPersistence;
+@@ -348,6 +349,7 @@ async fn handle_post_request(
+     let ee_registration_entry = fetch_ee_registration_by_device_id(vid, db).await?;
+ 
+     let is_ee_registered = ee_registration_entry.is_some();
++    let ee_device_type = ee_registration_entry.as_ref().map(|e| e.device_type.clone());
+     let is_ee_blocked = {
+         if let Some(ee_registration) = ee_registration_entry {
+             ee_registration.status == Status::Blocked
+@@ -400,6 +402,13 @@ async fn handle_post_request(
+         ));
+     }
+ 
++    // /POST Throw Error- 400-30: disallowed appPermissions.
++    //    The RA only forwards requests whose PSIDs are allowed for the EE's device type
++    //    (policy from RA_PSID_POLICY_OBU / RA_PSID_POLICY_RSU; unset = no restriction).
++    if let (Some(nb), Some(device_type)) = (non_butterfly.as_ref(), ee_device_type.as_ref()) {
++        check_psid_policy(device_type, &nb.app_psids)?;
++    }
++
+     // /POST Throw Error- 400-78: Outside ra-maxGenDelay generationTime
+     // Maximum time between generationTime in the
+     // EeRaCertRequest and the requested start time of the
+@@ -481,6 +490,63 @@ async fn handle_post_request(
+     Ok(ack_response)
+ }
+ 
++/// Allowed PSIDs per device type, from a comma separated list of decimal or 0x-hex values.
++fn allowed_psids_for(device_type: &DeviceType) -> Option<Vec<u64>> {
++    let var = match device_type {
++        DeviceType::Obu => "RA_PSID_POLICY_OBU",
++        DeviceType::Rsu => "RA_PSID_POLICY_RSU",
++    };
++    let raw = std::env::var(var).ok()?;
++    let list = raw
++        .split(',')
++        .map(|s| s.trim())
++        .filter(|s| !s.is_empty())
++        .filter_map(|s| {
++            if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
++                u64::from_str_radix(hex, 16).ok()
++            } else {
++                s.parse::<u64>().ok()
++            }
++        })
++        .collect::<Vec<u64>>();
++    Some(list)
++}
++
++fn check_psid_policy(
++    device_type: &DeviceType,
++    requested: &[u64],
++) -> Result<(), errors::HandleResponseError> {
++    let Some(allowed) = allowed_psids_for(device_type) else {
++        return Ok(());
++    };
++    if requested.is_empty() {
++        log::warn!("No appPermissions requested by {:?}", device_type);
++        return Err(errors::HandleResponseError::new(
++            "Disallowed appPermissions: none requested",
++            StatusCode::BAD_REQUEST,
++            Ieee1609Dot2Dot1ErrorCodes::BadRequest(
++                errors::BadRequestErrorCodes::DisallowedAppPermissions,
++            ),
++        ));
++    }
++    if let Some(bad) = requested.iter().find(|p| !allowed.contains(p)) {
++        log::warn!(
++            "PSID {:#x} is not allowed for {:?} (allowed: {:?})",
++            bad,
++            device_type,
++            allowed
++        );
++        return Err(errors::HandleResponseError::new(
++            &format!("Disallowed appPermissions: PSID {:#x}", bad),
++            StatusCode::BAD_REQUEST,
++            Ieee1609Dot2Dot1ErrorCodes::BadRequest(
++                errors::BadRequestErrorCodes::DisallowedAppPermissions,
++            ),
++        ));
++    }
++    Ok(())
++}
++
+ async fn certificate_request_ack_response(
+     payload_encoded: Vec<u8>,
+     db: &DatabaseConnection,
+diff --git a/scmscommon/src/core_types/caterpillar.rs b/scmscommon/src/core_types/caterpillar.rs
+index 0660386..7e9bbc1 100644
+--- a/scmscommon/src/core_types/caterpillar.rs
++++ b/scmscommon/src/core_types/caterpillar.rs
+@@ -38,6 +38,10 @@ pub struct NonButterflyRequest {
+     pub hash_id: String,
+     pub exp_type: ExpansionType,
+     pub certificate_type: CertificateType,
++    /// PSIDs requested by the EE in EeRaCertRequest.tbsCert.appPermissions.
++    /// Copied into the authorization certificate by the ACA.
++    #[serde(default)]
++    pub app_psids: Vec<u64>,
+ }
+ 
+ impl NonButterflyRequest {
+@@ -56,9 +60,14 @@ impl NonButterflyRequest {
+             hash_id,
+             exp_type,
+             certificate_type,
++            app_psids: vec![],
+         }
+     }
+ 
++    pub fn get_app_psids(&self) -> Vec<u64> {
++        self.app_psids.clone()
++    }
++
+     pub fn get_verifying_key_raw(&self) -> Vec<u8> {
+         self.verifying_key_raw.clone()
+     }

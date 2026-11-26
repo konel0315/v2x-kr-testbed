@@ -15,5 +15,9 @@ __pycache__/
 # SAE J2735 (라이선스: 올리지 않음)
 asn/
 common/j2735_gen.py
-ca/data/
-ca/data/
+
+# IEEE 1609.2 / 1609.2.1 (OpenSCMS 서브모듈의 ASN에서 scripts/build_ieee1609.sh로 만든다)
+common/ieee1609_gen.py
+
+# 장치 키·인증서 (OpenSCMS에서 받은 것, 비밀키 포함)
+ee-data/

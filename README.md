@@ -1,7 +1,8 @@
-# V2X 가상환경 (한국 C-ITS 기준) — RSU 1, OBU 2, CA 1
+# V2X 가상환경 (한국 C-ITS 기준) — RSU 1, OBU 2, SCMS 1
 
 국내 C-ITS 표준을 전제로 V2X 통신의 기본 보안(IEEE 1609.2 서명·검증)을 오픈소스 가상환경에서 구현한다.
 모든 메시지는 서명되고, 받는 쪽은 검증을 통과한 메시지만 쓴다.
+인증서는 오픈소스 SCMS인 **OpenSCMS**(IEEE 1609.2.1)가 실제 절차(등록 → 등록인증서 → 응용인증서 → 다운로드)대로 발급한다.
 차(OBU)는 V2X로 받은 신호만 보고 빨간불에 서고 초록불에 출발한다.
 
 - [처음부터 설치하기](#처음부터-설치하기-windows-기준) — Windows에서 Ubuntu 설치부터 시뮬레이션 실행까지
@@ -13,9 +14,9 @@
 
 # 처음부터 설치하기 (Windows 기준)
 
-위에서부터 순서대로 하면 된다. 처음 한 번은 1~2시간 걸린다 (대부분 다운로드 시간).
+위에서부터 순서대로 하면 된다. 처음 한 번은 2~3시간 걸린다 (대부분 다운로드와 OpenSCMS 빌드 시간).
 
-**필요한 것**: Windows 10/11, RAM 16 GB 이상 권장, 디스크 여유 30 GB 이상, 인터넷, GitHub 계정, SAE 계정(무료, 4단계에서 만듦)
+**필요한 것**: Windows 10/11, RAM 32 GB 이상 권장(OpenSCMS 때문), 디스크 여유 60 GB 이상, 인터넷, GitHub 계정, SAE 계정(무료, 4단계에서 만듦)
 
 **명령어 붙여 넣는 법**
 - **PowerShell**(파란 창): `Ctrl + V` 또는 마우스 오른쪽 클릭
@@ -45,11 +46,11 @@ wsl --install -d Ubuntu-24.04
 
 ```bash
 WINUSER=$(cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')
-printf "[wsl2]\nmemory=8GB\n" > "/mnt/c/Users/$WINUSER/.wslconfig"
+printf "[wsl2]\nmemory=24GB\n" > "/mnt/c/Users/$WINUSER/.wslconfig"
 cat "/mnt/c/Users/$WINUSER/.wslconfig"
 ```
 
-`[wsl2]`, `memory=8GB` 두 줄이 보이면 된다. 이어서 systemd(서비스 관리자)가 켜져 있는지 확인한다:
+`[wsl2]`, `memory=24GB` 두 줄이 보이면 된다. (OpenSCMS가 메모리를 많이 쓴다. PC 메모리가 32 GB보다 작으면 `16GB`로 바꾼다) 이어서 systemd(서비스 관리자)가 켜져 있는지 확인한다:
 
 ```bash
 ps -p 1 -o comm=
@@ -75,7 +76,7 @@ wsl --shutdown
 free -h
 ```
 
-`Mem:` 줄의 total이 **7~8Gi** 정도면 성공. **이제부터 모든 명령은 Ubuntu 창에서 한다.**
+`Mem:` 줄의 total이 **23Gi** 정도면 성공 (16GB로 했으면 15Gi). **이제부터 모든 명령은 Ubuntu 창에서 한다.**
 
 ---
 
@@ -161,7 +162,7 @@ cd ~/v2x-kr-testbed
 ls
 ```
 
-`README.md`, `obu`, `ca`, `common` 등이 보이면 성공.
+`README.md`, `obu`, `common`, `openscms-patch` 등이 보이면 성공.
 
 ---
 
@@ -308,7 +309,104 @@ cd ~/V2X-Hub/configuration && docker compose logs v2xhub --since 5m | grep -i "F
 
 ---
 
-## 7단계. 실행
+## 7단계. OpenSCMS 설치 (SCMS 인증 서버)
+
+LG전자가 공개한 IEEE 1609.2.1 SCMS다. 등록 CA(ECA), 등록기관(RA), 응용 CA(ACA), 연결기관(LA) 2개, CAM이 각각 프로그램으로 떠서 실제 SCMS처럼 서로 통신하고, 루트 CA와 중간 CA(ICA)의 인증서는 설치할 때 한 번 만든다.
+쿠버네티스(minikube) 위에서 돌아간다. 자세한 설명과 문제 해결: **[docs/openscms.md](docs/openscms.md)**
+
+### 7-1. 필요한 프로그램
+
+```bash
+sudo apt install -y build-essential cmake pkg-config curl wget libssl-dev libzip-dev libcurl4-openssl-dev
+```
+
+쿠버네티스 도구(minikube, kubectl, helm, skaffold)는 `binenv`로 OpenSCMS가 정한 버전을 설치한다:
+
+```bash
+cd ~
+wget -q -O binenv https://github.com/devops-works/binenv/releases/download/v0.19.0/binenv_linux_amd64
+chmod +x ./binenv && ./binenv update && ./binenv install binenv && rm ./binenv
+echo 'export PATH=$HOME/.binenv:$PATH' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### 7-2. OpenSCMS 받기와 우리 수정 적용
+
+```bash
+mkdir -p ~/openscms && cd ~/openscms
+git clone --recurse-submodules https://github.com/OpenSCMS/OpenSCMS.git
+cd ~/openscms/OpenSCMS
+binenv install -l
+bash ~/v2x-kr-testbed/openscms-patch/apply.sh
+```
+
+- `binenv install -l`: 이 폴더의 `.binenv.lock`에 적힌 버전으로 minikube·kubectl·helm·skaffold를 설치한다.
+- `apply.sh`: 응용인증서에 **PSID 권한**(OBU=BSM, RSU=SPaT·MAP)을 넣도록 OpenSCMS를 고친다. 원래 OpenSCMS는 이 칸을 비워서 발급한다. 끝에 `적용 완료`가 두 번 나오면 성공. 되돌리기: `bash ~/v2x-kr-testbed/openscms-patch/revert.sh`
+
+### 7-3. minikube 준비
+
+```bash
+minikube config set driver docker
+(
+  set -x; cd "$(mktemp -d)" &&
+  KREW="krew-linux_amd64" &&
+  curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/latest/download/${KREW}.tar.gz" &&
+  tar zxvf "${KREW}.tar.gz" && ./"${KREW}" install krew
+)
+echo 'export PATH="$HOME/.krew/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+kubectl krew install rabbitmq
+```
+
+`kubectl krew list` 에 `rabbitmq`가 보이면 성공.
+
+### 7-4. 기관 인증서 만들기, 빌드, 실행
+
+```bash
+cd ~/openscms/OpenSCMS
+bash scripts/run_test_scms_manager.sh
+ls certs
+minikube start --memory=8g --cpus=4
+skaffold run
+```
+
+- `ls certs`: `aca ctl eca ica ra rootca` 가 보이면 기관 인증서(루트·중간·등록·응용 CA, RA)가 만들어진 것이다.
+- `skaffold run`: OpenSCMS(Rust)를 빌드해서 minikube에 올린다. **처음에는 20~40분** 걸린다. `Compiling ...` 이 계속 올라가면 정상이다.
+
+끝나면 확인한다:
+
+```bash
+kubectl get pods
+```
+
+모든 줄이 `Running`, `1/1` 이면 성공 (처음엔 `ContainerCreating` 일 수 있으니 1~2분 뒤 다시 확인).
+
+### 7-5. 주소 연결과 인증서 발급 시험
+
+```bash
+cd ~/v2x-kr-testbed
+bash scripts/openscms.sh start
+bash scripts/build_ieee1609.sh
+python3 scripts/provision.py
+```
+
+- `openscms.sh start`: ECA·RA·ACA를 `127.0.0.1:8091~8093`에 연결한다. 세 줄 모두 `200`이면 성공. 연결은 뒤에서 계속 유지된다.
+- `build_ieee1609.sh`: OpenSCMS에 들어 있는 IEEE 1609.2 / 1609.2.1 정의(ASN.1)로 Python 변환기(`common/ieee1609_gen.py`)를 만든다.
+- `provision.py`: OBU-01, OBU-02, RSU-01이 실제 SCMS 절차대로 인증서를 받는다. 아래처럼 나오면 성공:
+
+```
+[OBU-01] 등록 완료 (obu)
+[OBU-01] 등록인증서 OK  id=...
+[OBU-01] 응용인증서 발급  id=...
+[OBU-01] 준비 완료: 인증서 ..., PSID ['0x20'], 발급자 ...
+...
+[RSU-01] 준비 완료: 인증서 ..., PSID ['0x8002', '0xe0000017'], 발급자 ...
+신뢰 목록: root(...), ica(...), aca(...)
+```
+
+---
+
+## 8단계. 실행
 
 ```bash
 cd ~/v2x-kr-testbed
@@ -341,10 +439,13 @@ SUMO 창이 자동으로 뜨고 차 2대가 움직인다. 터미널에는 OBU �
 # 2) V2X-Hub 켜기 (30초쯤 뒤 docker compose ps 로 healthy 확인)
 cd ~/V2X-Hub/configuration && docker compose up -d
 
-# 3) (선택) VS Code로 코드 열기
+# 3) OpenSCMS 켜기 (minikube 시작 + 주소 연결, 1~3분)
+cd ~/v2x-kr-testbed && bash scripts/openscms.sh start
+
+# 4) (선택) VS Code로 코드 열기
 cd ~/v2x-kr-testbed && code .
 
-# 4) 시뮬레이션
+# 5) 시뮬레이션 (인증서가 있으면 재사용, 만료됐으면 새로 받음)
 cd ~/v2x-kr-testbed
 bash scripts/run.sh --coop
 ```
@@ -356,6 +457,9 @@ bash scripts/run.sh --coop
 | `sumo-gui -c sumo/intersection.sumocfg` | SUMO 화면만 보기 (V2X 없음) |
 | 브라우저 `https://127.0.0.1` | V2X-Hub 웹 관리 화면 (v2xadmin) |
 | `cd ~/V2X-Hub/configuration && docker compose stop` | V2X-Hub 끄기 (설정은 유지) |
+| `bash scripts/openscms.sh status` | OpenSCMS 기관 상태와 주소 연결 확인 |
+| `python3 scripts/provision.py --renew` | 응용인증서 새로 받기 |
+| `minikube stop` | OpenSCMS 끄기 (데이터는 유지) |
 
 **출력 위치**: `logs/*.out`(각 프로그램 화면), `logs/*.jsonl`(메시지마다 JSON 한 줄), `~/v2xhub_data/logs/json/`(V2X-Hub가 받은 BSM 기록)
 
@@ -381,8 +485,12 @@ bash scripts/run.sh --coop
 | `build_j2735.sh` 에서 `ASN 폴더를 찾을 수 없습니다` | 압축 푼 경로가 다름 | `.asn` 파일이 있는 폴더 경로로 다시 실행 |
 | `ModuleNotFoundError: common.j2735_gen` | 4단계를 안 함 | 4단계 실행 |
 | `ModuleNotFoundError` (traci, pycrate 등) | 가상환경이 꺼져 있음 | `source ~/.venv/v2x/bin/activate` |
-| OBU가 `CA 거부` 또는 연결 오류 | CA가 늦게 켜짐 / 이전 실행이 남아 있음 | Ctrl+C로 끄고 `bash scripts/run.sh --coop` 다시 |
-| `Address already in use` | 이전 실행 프로그램이 남아 있음 | `pkill -f "ca/ca.py\|radio/air.py\|rsu-gateway\|rsu-signer\|tsc/tsc.py\|obu/obu.py"; pkill sumo-gui` 후 다시 실행 |
+| `OpenSCMS(RA 127.0.0.1:8092)에 연결할 수 없습니다` | OpenSCMS가 꺼져 있거나 주소 연결이 끊김 | `bash scripts/openscms.sh start` |
+| `응용인증서에 PSID ... 권한이 없습니다` | OpenSCMS 수정본이 빌드되지 않음 | 7-2의 `apply.sh` 후 `cd ~/openscms/OpenSCMS && skaffold run` |
+| `HTTP 400 400-21` (unregistered) | OpenSCMS를 새로 설치해서 예전 등록이 없어짐 | `python3 scripts/provision.py --reset` |
+| `ModuleNotFoundError: common.ieee1609_gen` | 7-5를 안 함 | `bash scripts/build_ieee1609.sh` |
+| 그 밖의 OpenSCMS 문제 | | [docs/openscms.md](docs/openscms.md) 문제 해결 |
+| `Address already in use` | 이전 실행 프로그램이 남아 있음 | `pkill -f "radio/air.py\|rsu-gateway\|rsu-signer\|tsc/tsc.py\|obu/obu.py"; pkill sumo-gui` 후 다시 실행 |
 | VS Code에서 만든 파일이 0바이트 | 저장 안 함 | `Ctrl + S` |
 
 ---
@@ -390,7 +498,8 @@ bash scripts/run.sh --coop
 # 전체 구조
 
 ```
-                    CA (인증서 발급)
+          OpenSCMS (minikube): ECA · RA · ACA · LA×2 · CAM  (루트 → ICA 아래)
+                 │  IEEE 1609.2.1 (HTTP, 요청은 RA 공개키로 암호화)
                  ┌────────┼────────┐
                  ▼        ▼        ▼
  SUMO ──위치──▶ OBU-01  OBU-02    RSU-01 = gateway.py + V2X-Hub + signer.py
@@ -403,7 +512,8 @@ bash scripts/run.sh --coop
 - **차 → RSU**: OBU가 BSM을 서명해 방송 → RSU 게이트웨이가 검증 → V2X-Hub
 - **RSU → 차**: V2X-Hub가 SPaT·MAP 생성 → RSU 서명기가 서명해 방송 → OBU가 검증 → 신호에 따라 정지·출발
 - V2X-Hub는 RSU의 메시지 처리기이며 서명·검증 기능이 없어서, 앞에 검증 게이트웨이, 뒤에 서명기를 둔다.
-- Docker 위에는 V2X-Hub만 있고, 나머지는 Ubuntu에서 일반 프로그램으로 실행된다 (`scripts/run.sh`가 한 번에 실행).
+- **인증서**: 각 장치가 OpenSCMS에 등록 → 등록인증서(ECA) → 응용인증서 요청(RA, 암호화) → 다운로드. 응용인증서는 ACA가 발급하고 장치 이름이 없는 익명 인증서다.
+- Docker 위에는 V2X-Hub와 OpenSCMS(minikube)가 있고, 나머지는 Ubuntu에서 일반 프로그램으로 실행된다 (`scripts/run.sh`가 한 번에 실행).
 
 ## 한국 기준과 구현
 
@@ -412,15 +522,14 @@ bash scripts/run.sh --coop
 | 무선 | LTE-V2X | 과기정통부·국토부 2023.12 | 가상 무선 채널(UDP)로 대신 — `radio/air.py` |
 | 메시지 | SPaT, MAP, BSM (SAE J2735) | KS R 1600 | SAE J2735 2024 UPER — `common/j2735.py` |
 | 메시지 봉투 | IEEE 1609.3 WSMP | | `common/wsmp.py` |
-| 서명 | IEEE 1609.2 | CTI 4001, 항법학회지 2023 | 명시적 인증서, ECDSA P-256 — `common/sec1609.py` |
-| 인증 체계 | SCMS 구조 | 자동차안전학회지 2021 | 루트 → 등록 CA·응용 CA — `ca/ca.py` |
+| 서명 | IEEE 1609.2-2022 | CTI 4001, 항법학회지 2023 | 명시적 응용인증서, ECDSA P-256 — `common/sec1609.py` |
+| 인증 체계 | SCMS (IEEE 1609.2.1-2022) | 자동차안전학회지 2021 | OpenSCMS: 루트 → ICA → ECA·ACA, RA — `common/scms_client.py` |
 | RSU 소프트웨어 | V2X-Hub (미국 교통부) | V2X-Hub README | V2X-Hub 8.1.0 (Docker) |
 | 신호제어기 → RSU | NTCIP 1202 | | TSCBM — `tsc/tsc.py` |
 
 # 폴더 구조
 
 ```
-ca/ca.py                 CA 서버 (등록 인증서, 응용 인증서, 체인 배포). 키는 ca/data/ (Git 제외)
 obu/obu.py               OBU (같은 코드로 OBU-01, OBU-02). BSM 서명·방송, SPaT·MAP 검증, 협력주행
 rsu-gateway/gateway.py   RSU 수신: BSM 검증 → V2X-Hub (UDP 26789)
 rsu-signer/signer.py     RSU 송신: V2X-Hub 출력(UDP 1516) → 서명 → 방송
@@ -430,12 +539,19 @@ radio/air.py             가상 무선 채널 (방송, 손실·지연 옵션)
 common/                  공통 부품
   j2735.py               BSM·SPaT·MAP 생성·해석
   sec1609.py             IEEE 1609.2 인증서·서명·검증 (검증 4단계)
-  identity.py            장치 시작 시 CA에서 인증서 받기
+  scms_client.py         IEEE 1609.2.1 단말 쪽: 등록, 등록인증서, 응용인증서 요청·다운로드
+  scms_crypto.py         ECIES·AES-CCM 암호화, 암묵적 인증서 키 복원
+  identity.py            장치별 인증서·신뢰 목록 준비 (OBU=BSM, RSU=SPaT·MAP)
   wsmp.py, psid.py       메시지 봉투, 메시지 종류 번호
   intersection.py        MAP·SPaT 해석 (차로, 정지선 거리, 신호 색)
   radio.py, v2xlog.py    가상 무선 접속, 메시지별 JSON 로그
 sumo/                    사거리 1개(판교 부근 가상 좌표), 차량 2대
 scripts/run.sh           전체 실행
+scripts/openscms.sh      OpenSCMS 켜기(minikube)·주소 연결·상태 확인
+scripts/provision.py     OBU·RSU 인증서 받기 (OpenSCMS)
+scripts/build_ieee1609.sh IEEE 1609.2/1609.2.1 ASN.1 → Python 변환기
+openscms-patch/          OpenSCMS 수정본 (응용인증서 PSID 권한, RA의 장치별 PSID 정책)
+ee-data/                 장치 키·인증서 (Git 제외)
 scripts/setup_ubuntu.sh  개발 도구 설치 (2단계를 한 번에)
 scripts/build_j2735.sh   SAE J2735 ASN.1 → Python 변환기
 v2xhub-config/           V2X-Hub 플러그인 설정 기록
@@ -453,7 +569,7 @@ docs/                    계획서, 단계별 기록
 | 3 | 유효기간 | CERT_EXPIRED |
 | 4 | 발급 체인: 신뢰하는 루트까지 이어지는가 | UNKNOWN_ISSUER |
 
-인증서 형식과 서명·검증은 IEEE 1609.2를 따르고, 인증서 발급 절차(IEEE 1609.2.1)는 단순화했다. 자세한 내용: [docs/step4-6.md](docs/step4-6.md)
+인증서 형식과 서명·검증은 IEEE 1609.2를, 인증서 발급 절차는 IEEE 1609.2.1을 따른다 (OpenSCMS). 자세한 내용: [docs/openscms.md](docs/openscms.md)
 
 # 단계별 기록
 
@@ -463,19 +579,22 @@ docs/                    계획서, 단계별 기록
 | 1 | V2X-Hub BSM 수신 | [docs/step1.md](docs/step1.md) |
 | 2 | OBU 2대 BSM 전송 | [docs/step2.md](docs/step2.md) |
 | 3, 3-1 | RSU SPaT·MAP 방송, 협력주행 | [docs/step3.md](docs/step3.md) |
-| 4~6 | CA, 서명·검증 | [docs/step4-6.md](docs/step4-6.md) |
+| 4~6 | 서명·검증 (처음에는 자체 CA) | [docs/step4-6.md](docs/step4-6.md) |
+| 8 | OpenSCMS로 교체 (IEEE 1609.2.1) | [docs/openscms.md](docs/openscms.md) |
 
 # 단순화한 점과 앞으로
 
-- 무선은 가상(UDP), 인증서는 명시적·1장 고정, CA는 3개 기관으로 단순화, CA 통신은 HTTP
-- RSU·OBU·CA는 일반 프로그램으로 실행 (V2X-Hub만 Docker)
-- **예정**: CA를 오픈소스 SCMS(OpenSCMS, IEEE 1609.2.1)로 교체. `ca/ca.py`와 `common/identity.py`만 바꾸면 되도록 나눠 둠
+- 무선은 가상(UDP). 응용인증서는 NonButterfly 방식으로 장치당 1장 (실제 OBU는 버터플라이 키로 여러 장을 받아 바꿔 씀)
+- SCMS 통신은 HTTP (요청 내용은 1609.2.1대로 서명·암호화되지만, 전송 구간 TLS와 OAuth 토큰은 생략)
+- 루트 인증서는 장치 출고 때 넣는 것으로 보고, OpenSCMS 폴더에서 한 번 복사해 쓴다 (`ee-data/trust/root.cert`)
+- RSU·OBU는 일반 프로그램으로 실행 (V2X-Hub와 OpenSCMS만 컨테이너)
 - 2차 과제(추가 보안): 재전송 검사, 시각 교차 검사, SPaT 개연성 검사, 위치 대조, 속도 제한, CRL, 인증서 자동 갱신·익명 교체, HSM, HTTPS, Docker 네트워크 분리 + iptables
 
 # 사용한 오픈소스
 
 - [V2X-Hub](https://github.com/usdot-fhwa-OPS/V2X-Hub) (Apache 2.0) — 저장소에 포함하지 않고 별도 설치
 - [Eclipse SUMO](https://eclipse.dev/sumo/)
-- [pycrate](https://github.com/pycrate-org/pycrate) — ASN.1 컴파일·인코딩 (IEEE 1609.2 ASN.1 포함)
-- [cryptography](https://cryptography.io/) — ECDSA P-256
+- [OpenSCMS](https://github.com/OpenSCMS/OpenSCMS) (Apache 2.0, LG전자) — IEEE 1609.2.1 SCMS. 저장소에 포함하지 않고 별도 설치, 수정분만 `openscms-patch/`에
+- [pycrate](https://github.com/pycrate-org/pycrate) — ASN.1 컴파일·인코딩
+- [cryptography](https://cryptography.io/) — ECDSA P-256, ECDH, AES-CCM
 - SAE J2735 ASN.1 (J2735ASN_202409) — SAE 라이선스, 저장소에 포함하지 않음 (각자 SAE에서 받기)
