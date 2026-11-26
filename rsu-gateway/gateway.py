@@ -3,7 +3,7 @@
 (V2X-Hub는 서명을 검증하지 않으므로 이 게이트웨이가 앞에서 걸러야 한다.)
 
 검증: 1 서명  2 권한(PSID)  3 유효기간  4 발급 체인. 실패하면 버리고 기록한다.
-사용법: python3 rsu-gateway/gateway.py [--no-verify]
+사용법: python3 rsu-gateway/gateway.py
 """
 import argparse
 import os
@@ -21,14 +21,13 @@ from common.v2xlog import V2XLog  # noqa: E402
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--v2xhub", default="127.0.0.1:26789", help="V2X-Hub MessageReceiver")
-    ap.add_argument("--no-verify", action="store_true", help="검증 끔 (시험 비교용)")
     args = ap.parse_args()
     host, port = args.v2xhub.split(":")
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     radio = Radio("RSU-01-gateway")
     log = V2XLog("RSU-01-gateway")
-    verifier = None if args.no_verify else trust_store()      # CA 체인 = 신뢰 저장소
-    print(f"[gateway] 가상 무선 수신 -> V2X-Hub {args.v2xhub} (검증 {'끔' if args.no_verify else '켬'})")
+    verifier = trust_store()                                  # SCMS 신뢰 목록 = 루트·ICA·ACA
+    print(f"[gateway] 가상 무선 수신 -> 1609.2 검증 -> V2X-Hub {args.v2xhub}")
 
     count, rejected, last_report = {}, {}, time.monotonic()
     while True:
@@ -43,20 +42,17 @@ def main():
             continue
         if p != psid.BSM:
             continue                                   # RSU가 받을 메시지는 BSM뿐
-        auth, signer = "NOT_CHECKED", "?"
-        if verifier is not None:
-            try:
-                if not sec1609.is_spdu(data):
-                    raise sec1609.VerifyError(1, "UNSIGNED")
-                data, cert = verifier.verify(data, psid.BSM)
-                auth, signer = "VALID", cert.name
-            except sec1609.VerifyError as e:
-                rejected[e.reason] = rejected.get(e.reason, 0) + 1
-                log.write("BSM", signer, "REJECT", e.reason, auth_status="INVALID",
-                          fail_step=e.step, t_start=t0)
-                continue
-        elif sec1609.is_spdu(data):
-            data = sec1609.unwrap_unverified(data)
+        signer = "?"
+        try:
+            if not sec1609.is_spdu(data):
+                raise sec1609.VerifyError(1, "UNSIGNED")
+            data, cert = verifier.verify(data, psid.BSM)
+            auth, signer = "VALID", cert.name
+        except sec1609.VerifyError as e:
+            rejected[e.reason] = rejected.get(e.reason, 0) + 1
+            log.write("BSM", signer, "REJECT", e.reason, auth_status="INVALID",
+                      fail_step=e.step, t_start=t0)
+            continue
         try:
             _, bsm = j2735.decode(data)
             sender = signer if signer != "?" else bsm["coreData"]["id"].decode(errors="replace")

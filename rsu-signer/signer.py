@@ -2,8 +2,7 @@
 IEEE 1609.2로 서명하고 WSMP로 감싸 가상 무선으로 방송한다.
 (V2X-Hub는 서명하지 않으므로 이 서명기가 뒤에서 서명한다.)
 
-인증서는 시작할 때 CA에서 받는다 (RSU-01, 권한 SPaT·MAP).
---cert-duration N: 인증서를 N초짜리로 받는다 (7단계 '만료' 시험용)
+인증서는 OpenSCMS(SCMS)에서 받은 RSU-01 응용인증서를 쓴다 (권한 SPaT·MAP).
 
 V2X-Hub ImmediateForward 설정에서 address를 host.docker.internal, port를 1516으로 둔다.
 사용법: python3 rsu-signer/signer.py
@@ -34,9 +33,8 @@ def parse_rsu41(text):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--listen", type=int, default=1516, help="ImmediateForward 수신 포트")
-    ap.add_argument("--cert-duration", type=int, default=None, help="인증서 유효 시간(초), 만료 시험용")
     args = ap.parse_args()
-    ident = Identity("RSU-01", duration_s=args.cert_duration)
+    ident = Identity("RSU-01")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", args.listen))
     radio = Radio("RSU-01-signer")

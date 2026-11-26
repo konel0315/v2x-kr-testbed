@@ -1,0 +1,215 @@
+diff --git a/include/public/oscms_codecs_bridge/aca_ee_cert_response.h b/include/public/oscms_codecs_bridge/aca_ee_cert_response.h
+index 4866044..73edbeb 100644
+--- a/include/public/oscms_codecs_bridge/aca_ee_cert_response.h
++++ b/include/public/oscms_codecs_bridge/aca_ee_cert_response.h
+@@ -17,6 +17,10 @@
+ #ifndef OSCMS_BRIDGE_ACA_EE_CERT_RESPONSE_H
+ #define OSCMS_BRIDGE_ACA_EE_CERT_RESPONSE_H
+ 
++#ifndef OSCMS_MAX_REQUESTED_PSIDS
++#define OSCMS_MAX_REQUESTED_PSIDS 8
++#endif
++
+ #ifdef __cplusplus
+ extern "C"
+ {
+@@ -37,6 +41,9 @@ extern "C"
+         OscmsAdditionalParamsType certificate_flavor_type;
+         OscmsOctetBuffer caterpillar_public_key; // S
+         OscmsOctetBuffer encryption_key;         // E (or encryption key for NonbutterflyEncrypted)
++        // appPermissions PSIDs to put in the authorization certificate (0 = none)
++        OscmsPsid app_psids[OSCMS_MAX_REQUESTED_PSIDS];
++        size_t app_psids_count;
+         OscmsOctetBuffer private_key_info;
+         uint16_t response_certificate_validity_duration_years;
+         OscmsTime32 response_certificate_validity_begin;
+diff --git a/include/public/oscms_codecs_bridge/ee_ra_cert_request.h b/include/public/oscms_codecs_bridge/ee_ra_cert_request.h
+index 0367a9d..2f3f1fd 100644
+--- a/include/public/oscms_codecs_bridge/ee_ra_cert_request.h
++++ b/include/public/oscms_codecs_bridge/ee_ra_cert_request.h
+@@ -17,6 +17,10 @@
+ #ifndef OSCMS_BRIDGE_EE_RA_CERT_REQUEST_H
+ #define OSCMS_BRIDGE_EE_RA_CERT_REQUEST_H
+ 
++#ifndef OSCMS_MAX_REQUESTED_PSIDS
++#define OSCMS_MAX_REQUESTED_PSIDS 8
++#endif
++
+ #ifdef __cplusplus
+ extern "C"
+ {
+@@ -50,6 +54,9 @@ extern "C"
+         OscmsOctetBuffer signing_expansion;      // fs - OBK, UBK, CUBK
+         OscmsOctetBuffer encryption_expansion;   // fe - OBK
+         OscmsOctetBuffer encryption_key;         // can be byte + E - OBK or NonbutterflyEncrypted
++        // Requested appPermissions PSIDs (tbsCert.appPermissions) - output
++        OscmsPsid app_psids[OSCMS_MAX_REQUESTED_PSIDS];
++        size_t app_psids_count;
+     } EeRaCertRequestArgs;
+ 
+     SO_EXPORT int handle_ee_ra_cert_request(EeRaCertRequestArgs *args);
+diff --git a/src/aca_ee_cert_response.c b/src/aca_ee_cert_response.c
+index 1755d35..fcfd1ef 100644
+--- a/src/aca_ee_cert_response.c
++++ b/src/aca_ee_cert_response.c
+@@ -120,7 +120,9 @@ SO_EXPORT OscmsErrorCode handle_aca_ee_cert_response(AcaEeCertResponseArgs *args
+         &args->aca_private_key,
+         &issuer_certificate,
+         &auth_certificate,
+-        &implicit_private_reconstruction_value);
++        &implicit_private_reconstruction_value,
++        args->app_psids,
++        args->app_psids_count);
+ 
+     if (rc != 0)
+     {
+diff --git a/src/certificate_util.c b/src/certificate_util.c
+index dc525d5..4b857a5 100644
+--- a/src/certificate_util.c
++++ b/src/certificate_util.c
+@@ -626,7 +626,7 @@ static int set_certificate_issuer(
+     return 0;
+ }
+ 
+-static int build_1609_dot2_certificate(
++static int build_1609_dot2_certificate_ex(
+     OscmsCertificateType type,                        // input
+     uint16_t certificate_years_duration,              // input
+     OscmsTime32 certificate_validity_begin,           // input
+@@ -641,7 +641,9 @@ static int build_1609_dot2_certificate(
+     const OscmsCertificate *issuer_certificate,       // input - Optional
+     const OscmsOctetBuffer *encryption_public_key,    // input - Optional
+     OscmsCertificate *certificate,                    // output
+-    OscmsOctetBuffer *implicit_private_reconstruction_value)
++    OscmsOctetBuffer *implicit_private_reconstruction_value,
++    const OscmsPsid *app_psids,                       // input - Optional
++    size_t app_psids_count)                           // input
+ {
+     oscms_log(LOG_DEBUG, "%s: Entering", __func__);
+ 
+@@ -709,6 +711,25 @@ static int build_1609_dot2_certificate(
+         goto error_cleanup;
+     }
+ 
++    // Set end-entity appPermissions (authorization certificates)
++    if (certificate_ssp_byte == 0x00 && app_psids && app_psids_count > 0)
++    {
++        certificate->tbs_certificate.app_permissions = oscms_tracked_malloc(
++            sizeof(OscmsPsidSsp) * app_psids_count, &certificate->tbs_certificate.allocations);
++        if (!certificate->tbs_certificate.app_permissions)
++        {
++            oscms_log(LOG_CRIT, "%s: malloc failed for app_permissions", __func__);
++            rc = OSCMS_ERROR_INTERNAL_SERVER_ERROR;
++            goto error_cleanup;
++        }
++        for (size_t i = 0; i < app_psids_count; i++)
++        {
++            certificate->tbs_certificate.app_permissions[i].psid = app_psids[i];
++            certificate->tbs_certificate.app_permissions[i].ssp  = NULL;
++        }
++        certificate->tbs_certificate.app_permissions_count = app_psids_count;
++    }
++
+     // Set Verification key (based on nid and certificate type)
+     int nid = (hash_algorithm == OSCMS_HASH_ALGORITHM_SHA256 ? NID_X9_62_prime256v1 : NID_brainpoolP384r1);
+ 
+@@ -768,6 +789,29 @@ error_cleanup:
+     return rc;
+ }
+ 
++static int build_1609_dot2_certificate(
++    OscmsCertificateType type,
++    uint16_t certificate_years_duration,
++    OscmsTime32 certificate_validity_begin,
++    OscmsIssuerIdentifierType issuer_identifier_type,
++    OscmsHashedId3 craca_id,
++    OscmsCrlSeries crl_series,
++    OscmsOctet certificate_ssp_byte,
++    OscmsHashAlgorithm hash_algorithm,
++    const OscmsOctetBuffer *device_id,
++    const OscmsOctetBuffer *certificate_public_key,
++    const OscmsOctetBuffer *issuer_private_key,
++    const OscmsCertificate *issuer_certificate,
++    const OscmsOctetBuffer *encryption_public_key,
++    OscmsCertificate *certificate,
++    OscmsOctetBuffer *implicit_private_reconstruction_value)
++{
++    return build_1609_dot2_certificate_ex(
++        type, certificate_years_duration, certificate_validity_begin, issuer_identifier_type, craca_id, crl_series,
++        certificate_ssp_byte, hash_algorithm, device_id, certificate_public_key, issuer_private_key,
++        issuer_certificate, encryption_public_key, certificate, implicit_private_reconstruction_value, NULL, 0);
++}
++
+ int issue_enrollment_certificate(
+     OscmsHashedId3 craca_id,
+     OscmsCrlSeries crl_series,
+@@ -814,10 +858,12 @@ int issue_auth_certificate(
+     const OscmsOctetBuffer *issuer_private_key,
+     const OscmsCertificate *issuer_certificate,
+     OscmsCertificate *certificate,
+-    OscmsOctetBuffer *implicit_private_reconstruction_value)
++    OscmsOctetBuffer *implicit_private_reconstruction_value,
++    const OscmsPsid *app_psids,
++    size_t app_psids_count)
+ {
+     // Enrollment Certificate is a 1609.2 Certificate Implicit type using P256 curve and SHA256 issued by a CA
+-    return build_1609_dot2_certificate(
++    return build_1609_dot2_certificate_ex(
+         certificate_type,                    // Type: Implicit or Explicit
+         certificate_validity_duration_years, // Validity duration in years
+         certificate_validity_begin,
+@@ -832,7 +878,9 @@ int issue_auth_certificate(
+         issuer_certificate,                        // ACA certificate
+         NULL,                                      // encryption_public_key
+         certificate,                               // Output: Certificate
+-        implicit_private_reconstruction_value);    // Output: Implicit private reconstruction value
++        implicit_private_reconstruction_value,     // Output: Implicit private reconstruction value
++        app_psids,                                 // appPermissions requested by the EE (may be NULL)
++        app_psids_count);
+ }
+ 
+ int issue_root_ca_certificate_and_keys(
+diff --git a/src/certificate_util.h b/src/certificate_util.h
+index 37baabd..bb9e2ba 100644
+--- a/src/certificate_util.h
++++ b/src/certificate_util.h
+@@ -121,7 +121,9 @@ extern "C"
+         const OscmsOctetBuffer *issuer_private_key,
+         const OscmsCertificate *issuer_certificate,
+         OscmsCertificate *certificate,
+-        OscmsOctetBuffer *implicit_private_reconstruction_value);
++        OscmsOctetBuffer *implicit_private_reconstruction_value,
++        const OscmsPsid *app_psids,
++        size_t app_psids_count);
+ 
+     /**
+      * @brief Build a Root CA 1609.2 certificate and generate its key pair
+diff --git a/src/ee_ra_cert_request.c b/src/ee_ra_cert_request.c
+index aa1390f..c3c536f 100644
+--- a/src/ee_ra_cert_request.c
++++ b/src/ee_ra_cert_request.c
+@@ -334,6 +334,24 @@ static int extract_ee_ra_cert_request_fields(
+     //    return OSCMS_ERROR_INVALID_APP_PERMISSIONS;
+     // }
+ 
++    // 1.1 Requested appPermissions (PSIDs) - forwarded to the ACA so the
++    //     authorization certificate carries the permissions the EE asked for
++    //     (IEEE 1609.2.1 EeRaCertRequest: tbsCert.appPermissions PRESENT)
++    args->app_psids_count = 0;
++    if (ee_ra_cert_request->tbs_certificate.app_permissions)
++    {
++        if (ee_ra_cert_request->tbs_certificate.app_permissions_count > OSCMS_MAX_REQUESTED_PSIDS)
++        {
++            oscms_log(LOG_ERR, "%s: too many requested PSIDs (%zu)", __func__,
++                      (size_t)ee_ra_cert_request->tbs_certificate.app_permissions_count);
++            return OSCMS_ERROR_FAILED_PARSING;
++        }
++        for (size_t i = 0; i < ee_ra_cert_request->tbs_certificate.app_permissions_count; i++)
++        {
++            args->app_psids[args->app_psids_count++] = ee_ra_cert_request->tbs_certificate.app_permissions[i].psid;
++        }
++    }
++
+     // 2. Certificate Validity Start Time
+     args->request_certificate_validity_start = ee_ra_cert_request->tbs_certificate.validity_period_start;
+ 

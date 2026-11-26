@@ -1,14 +1,13 @@
 """가상 OBU: SUMO 차량에 달린 단말기.
 
-  - 시작: CA에서 인증서를 받는다 (BSM 권한)
+  - 시작: OpenSCMS(SCMS)에서 받은 응용인증서를 쓴다 (BSM 권한, scripts/provision.py)
   - 보내기: 내 차 상태로 J2735 BSM을 만들어 IEEE 1609.2로 서명하고 0.1초마다 방송
   - 받기:   RSU가 방송한 SPaT(신호)·MAP(교차로 지도)을 검증한 뒤, 통과한 것만 쓴다
             검증: 1 서명  2 권한(PSID)  3 유효기간  4 발급 체인
   - 협력주행(--coop): SUMO 신호등은 무시하고, V2X로 받은 신호만 보고 정지·출발
 
-사용법 (CA 서버와 SUMO(--num-clients 3)를 미리 실행. 3번째 클라이언트는 tsc):
-    python3 obu/obu.py --vehicle obu1 --order 1 [--coop] [--no-verify]
-    --no-verify: 검증을 끈다 (7단계 '가짜 신호' 시험의 비교용)
+사용법 (OpenSCMS 인증서 준비와 SUMO(--num-clients 3)를 먼저. 3번째 클라이언트는 tsc):
+    python3 obu/obu.py --vehicle obu1 --order 1 [--coop]
 """
 import argparse
 import math
@@ -53,7 +52,7 @@ class V2XView:
         self.signals = {}          # signalGroup -> (eventState, minEndTime)
         self.spat_time = None
         self.log = log
-        self.verifier = verifier   # None이면 검증 끔
+        self.verifier = verifier   # SCMS 신뢰 목록(루트·ICA·ACA)으로 만든 검증기
         self.count = {"SPAT": 0, "MAP": 0}
         self.rejected = {}         # 거부 이유 -> 개수
 
@@ -72,16 +71,13 @@ class V2XView:
             return                                    # 다른 차의 BSM 등은 여기서 안 씀
         mtype, sender, auth = psid.NAMES[p], "?", "NOT_CHECKED"
         # ---- 1609.2 검증: 통과한 것만 쓴다
-        if self.verifier is not None:
-            if not sec1609.is_spdu(data):
-                return self._reject(mtype, sender, "UNSIGNED", 1, t0)
-            try:
-                data, cert = self.verifier.verify(data, p)
-            except sec1609.VerifyError as e:
-                return self._reject(mtype, sender, e.reason, e.step, t0)
-            sender, auth = cert.name, "VALID"
-        elif sec1609.is_spdu(data):
-            data = sec1609.unwrap_unverified(data)    # 검증 끔: 내용만 꺼내 그대로 믿음
+        if not sec1609.is_spdu(data):
+            return self._reject(mtype, sender, "UNSIGNED", 1, t0)
+        try:
+            data, cert = self.verifier.verify(data, p)
+        except sec1609.VerifyError as e:
+            return self._reject(mtype, sender, e.reason, e.step, t0)
+        sender, auth = cert.name, "VALID"
         try:
             name, value = j2735.decode(data)
         except Exception:
@@ -134,24 +130,21 @@ def main():
     ap.add_argument("--order", type=int, required=True, help="TraCI 클라이언트 순서 (1, 2)")
     ap.add_argument("--port", type=int, default=8813, help="SUMO TraCI 포트")
     ap.add_argument("--coop", action="store_true", help="V2X 신호만 보고 주행 (3-1단계)")
-    ap.add_argument("--no-verify", action="store_true", help="받은 메시지 검증을 끔 (시험 비교용)")
     args = ap.parse_args()
 
     name = args.vehicle.upper().replace("OBU", "OBU-0")       # obu1 -> OBU-01
     temp_id = args.vehicle.upper().encode()[:4].ljust(4, b"0")
-    ident = Identity(name)                                    # CA에서 인증서 받기
-    print(f"[{name}] 인증서 받음: PSID {[hex(p) for p in ident.cert.psids]}, "
-          f"검증 {'끔' if args.no_verify else '켬'}")
+    ident = Identity(name)                                    # SCMS 인증서 준비
+    print(f"[{name}] 인증서 받음: PSID {[hex(p) for p in ident.cert.psids]}")
     radio = Radio(name)
     log = V2XLog(name)
-    view = V2XView(log, None if args.no_verify else ident.verifier)
+    view = V2XView(log, ident.verifier)
 
     traci.init(port=args.port, label=args.vehicle)
     traci.setOrder(args.order)
     print(f"[{name}] SUMO 연결됨. 협력주행 {'켬' if args.coop else '끔'}")
 
     seen, msg_cnt, last_line, controlled, v2x_driving = False, 0, None, False, False
-    last_tls, violations = None, 0
     while traci.simulation.getMinExpectedNumber() > 0:
         t0 = time.monotonic()
         traci.simulationStep()
@@ -180,17 +173,6 @@ def main():
                     traci.vehicle.setSpeed(args.vehicle, -1)  # 다시 SUMO 기본 주행
                     controlled = False
 
-            # 신호 위반 감지: 정지선을 넘는 순간 SUMO의 실제 신호가 빨강이었는가
-            nxt = traci.vehicle.getNextTLS(args.vehicle)
-            if nxt:
-                last_tls = nxt[0]
-            elif last_tls is not None:
-                if last_tls[3] in "rRyY" and last_tls[2] < 5:
-                    violations += 1
-                    print(f"[{name}] !!! 신호 위반: 실제 신호 '{last_tls[3]}'에서 교차로 진입 "
-                          f"(V2X로 본 신호 {light})")
-                    log.write("EVENT", name, "RED_LIGHT_VIOLATION", reason=f"actual={last_tls[3]}")
-                last_tls = None
             where = (f"차로 {loc['laneID']} 정지선까지 {loc['dist_to_stop']:5.1f}m"
                      if loc else "교차로 밖")
             line = f"신호 {light or '-':7s} | {where}"
@@ -201,7 +183,7 @@ def main():
                       + (f" | 목표속도 {target:.1f}" if target is not None else ""))
             last_line = line
         elif seen:
-            print(f"[{name}] 목적지 도착, 종료. 신호 위반 {violations}회, 거부한 메시지 {view.rejected}")
+            print(f"[{name}] 목적지 도착, 종료. 거부한 메시지 {view.rejected}")
             break
         time.sleep(max(0.0, STEP - (time.monotonic() - t0)))
 
