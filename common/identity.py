@@ -10,10 +10,14 @@ import os
 from common import psid, scms_client, sec1609 as S
 
 # 장치 이름 → (장치 종류, 요청할 PSID). RA는 장치 종류별로 허용된 PSID만 발급한다.
+# SCMS의 단말 종류는 OBE(차량·휴대 단말)와 RSE(노변·인프라) 두 가지라서,
+# 보행자 스마트폰은 OBE(obu)로, 교통센터는 인프라(rsu)로 등록한다.
 DEVICES = {
     "OBU-01": ("obu", [psid.BSM]),
     "OBU-02": ("obu", [psid.BSM]),
+    "PED-01": ("obu", [psid.PSM]),                  # 보행자 스마트폰 (V2P)
     "RSU-01": ("rsu", [psid.SPAT, psid.MAP]),
+    "TMC-01": ("rsu", [psid.TIM]),                  # 교통센터 (V2N)
 }
 
 OPENSCMS_DIR = os.environ.get("OPENSCMS_DIR", os.path.expanduser("~/openscms/OpenSCMS"))

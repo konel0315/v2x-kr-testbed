@@ -1,4 +1,4 @@
-"""RSU 수신 게이트웨이: 가상 무선에서 받은 BSM을 IEEE 1609.2로 검증하고,
+"""RSU 수신 게이트웨이: 가상 무선에서 받은 BSM(차량)·PSM(보행자)을 IEEE 1609.2로 검증하고,
 통과한 것만 J2735 MessageFrame으로 꺼내 V2X-Hub MessageReceiver(UDP 26789)로 넘긴다.
 (V2X-Hub는 서명을 검증하지 않으므로 이 게이트웨이가 앞에서 걸러야 한다.)
 
@@ -40,31 +40,31 @@ def main():
         except ValueError:
             log.write("UNKNOWN", "?", "DROP", "BAD_WSMP", decode_status="INVALID", t_start=t0)
             continue
-        if p != psid.BSM:
-            continue                                   # RSU가 받을 메시지는 BSM뿐
-        signer = "?"
+        if p not in (psid.BSM, psid.PSM):
+            continue                                   # RSU가 받을 메시지는 BSM(차량)·PSM(보행자)
+        mtype, signer = psid.NAMES[p], "?"
         try:
             if not sec1609.is_spdu(data):
                 raise sec1609.VerifyError(1, "UNSIGNED")
-            data, cert = verifier.verify(data, psid.BSM)
+            data, cert = verifier.verify(data, p)
             auth, signer = "VALID", cert.name
         except sec1609.VerifyError as e:
             rejected[e.reason] = rejected.get(e.reason, 0) + 1
-            log.write("BSM", signer, "REJECT", e.reason, auth_status="INVALID",
+            log.write(mtype, signer, "REJECT", e.reason, auth_status="INVALID",
                       fail_step=e.step, t_start=t0)
             continue
         try:
-            _, bsm = j2735.decode(data)
-            sender = signer if signer != "?" else bsm["coreData"]["id"].decode(errors="replace")
+            j2735.decode(data)
         except Exception:
-            log.write("BSM", signer, "DROP", "DECODE_FAIL", auth_status=auth,
+            log.write(mtype, signer, "DROP", "DECODE_FAIL", auth_status=auth,
                       decode_status="INVALID", t_start=t0)
             continue
         out.sendto(data, (host, int(port)))           # V2X-Hub에는 J2735 MessageFrame만
-        log.write("BSM", sender, "ACCEPT", auth_status=auth, t_start=t0)
-        count[sender] = count.get(sender, 0) + 1
+        log.write(mtype, signer, "ACCEPT", auth_status=auth, t_start=t0)
+        key = f"{mtype} {signer[:8]}"
+        count[key] = count.get(key, 0) + 1
         if time.monotonic() - last_report > 5:
-            print(f"[gateway] V2X-Hub로 전달한 BSM: {count}" + (f", 거부: {rejected}" if rejected else ""))
+            print(f"[gateway] V2X-Hub로 전달: {count}" + (f", 거부: {rejected}" if rejected else ""))
             last_report = time.monotonic()
 
 

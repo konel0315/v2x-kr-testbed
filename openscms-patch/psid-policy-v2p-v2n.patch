@@ -1,0 +1,16 @@
+diff --git a/deployment/values.yaml b/deployment/values.yaml
+index d6959a9..98b03f6 100644
+--- a/deployment/values.yaml
++++ b/deployment/values.yaml
+@@ -111,8 +111,9 @@ env:
+ 
+   # V2X testbed: PSIDs an EE may request per device type (comma separated, decimal or 0x hex).
+   # Unset or removed = no restriction. 0x20 BSM, 0x8002 SPaT, 0xE0000017 MAP.
+-  RA_PSID_POLICY_OBU: "0x20"
+-  RA_PSID_POLICY_RSU: "0x8002,0xE0000017"
++  # V2P/V2N: 0x27 PSM (pedestrian handheld device = OBE), 0x8003 TIM (traffic center = infrastructure)
++  RA_PSID_POLICY_OBU: "0x20,0x27"
++  RA_PSID_POLICY_RSU: "0x8002,0xE0000017,0x8003"
+ 
+   PARAM_DOWNLOAD_MAX_AGE: "1000"
+   PARAM_DOWNLOAD_MAX_REQS: "10000"  # V2X testbed: shared IP + download polling

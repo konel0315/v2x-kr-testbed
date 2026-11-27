@@ -5,7 +5,7 @@ set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OSC="${1:-$HOME/openscms/OpenSCMS}"
 BR="$OSC/oscms_bridge/oscms-codecs-bridge"
-for pair in "$OSC|$HERE/openscms.patch" "$BR|$HERE/oscms-codecs-bridge.patch"; do
+for pair in "$OSC|$HERE/psid-policy-v2p-v2n.patch" "$OSC|$HERE/openscms.patch" "$BR|$HERE/oscms-codecs-bridge.patch"; do
   d="${pair%%|*}"; p="${pair##*|}"
   if git -C "$d" apply -R --check "$p" 2>/dev/null; then
     git -C "$d" apply -R "$p"; echo "되돌림: $(basename "$p")"

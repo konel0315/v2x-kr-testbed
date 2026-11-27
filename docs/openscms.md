@@ -51,6 +51,8 @@ V2X 메시지(BSM, SPaT, MAP)의 서명·검증 4단계는 그대로다.
 | `aca/src/core_logic/build_certificates.rs` | NonButterfly 응용인증서 유효기간을 "지금부터 1년"으로 (원래는 2004년부터) |
 | `deployment/values.yaml` | PSID 정책 `RA_PSID_POLICY_OBU="0x20"`, `RA_PSID_POLICY_RSU="0x8002,0xE0000017"`. 모든 장치가 한 IP(port-forward)로 접속하므로 요청 횟수 제한을 늘리고, 요청 생성 시각 허용 오차를 30초로 |
 
+9단계(V2P·V2N)에서 `psid-policy-v2p-v2n.patch`로 정책을 넓혔다: OBU 종류 `0x20,0x27`(BSM·PSM), RSU 종류 `0x8002,0xE0000017,0x8003`(SPaT·MAP·TIM). [v2p-v2n.md](v2p-v2n.md) 참고.
+
 적용·되돌리기:
 
 ```bash

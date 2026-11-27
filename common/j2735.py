@@ -12,6 +12,10 @@ _MF = j2735_gen.MessageFrame.MessageFrame
 BSM_ID = 20   # J2735 DSRCmsgID: basicSafetyMessage
 MAP_ID = 18   # mapData
 SPAT_ID = 19  # signalPhaseAndTimingMessage
+TIM_ID = 31   # travelerInformation (KS R 1600-5)
+PSM_ID = 32   # personalSafetyMessage (KS R 1600-6)
+
+ITIS_ROAD_CONSTRUCTION = 1025   # ITIS 코드(SAE J2540): 도로 공사
 
 
 def _clamp(v, lo, hi):
@@ -100,3 +104,83 @@ def make_spat(intersection_id, states, revision=1, name=None):
     if name:
         inter["name"] = name
     return encode_frame(SPAT_ID, "SPAT", {"intersections": [inter]})
+
+
+def make_psm(msg_cnt, temp_id, lat, lon, speed, heading, kind="aPEDESTRIAN"):
+    """보행자 단말의 위치로 J2735 PSM(개인 안전 메시지, KS R 1600-6)을 만든다.
+
+    kind: aPEDESTRIAN(보행자), aPEDALCYCLIST(자전거), aPUBLICSAFETYWORKER(도로 작업자)
+    """
+    psm = {
+        "basicType": kind,
+        "secMark": sec_mark_now(),
+        "msgCnt": msg_cnt,
+        "id": temp_id,                                       # 4바이트 임시 ID
+        "position": {"lat": int(round(lat * 1e7)), "long": int(round(lon * 1e7))},
+        "accuracy": {"semiMajor": 255, "semiMinor": 255, "orientation": 65535},
+        "speed": _clamp(int(round(speed / 0.02)), 0, 8190),
+        "heading": int(round((heading % 360) / 0.0125)) % 28800,
+    }
+    return encode_frame(PSM_ID, "PersonalSafetyMessage", psm)
+
+
+def psm_state(psm):
+    """PSM 내용 -> 위도, 경도, 속도(m/s), 방향(도)"""
+    return {"lat": psm["position"]["lat"] / 1e7, "lon": psm["position"]["long"] / 1e7,
+            "speed": psm["speed"] * 0.02, "heading": psm["heading"] * 0.0125,
+            "kind": psm["basicType"], "id": psm["id"]}
+
+
+def minute_of_year(t=None):
+    tm = time.gmtime(time.time() if t is None else t)
+    return tm.tm_year, (tm.tm_yday - 1) * 1440 + tm.tm_hour * 60 + tm.tm_min
+
+
+def make_tim(msg_cnt, packet_id, lat, lon, radius_m, speed_kmh, duration_min=60, start=None):
+    """공사 구간 안내 TIM(여행자 정보 메시지, KS R 1600-5)을 만든다.
+
+    구간: 중심(lat, lon), 반지름 radius_m 인 원
+    내용: 도로 공사(ITIS 1025) + 권고 속도 글자("30 km/h")
+    """
+    year, moy = minute_of_year(start)
+    anchor = {"lat": int(round(lat * 1e7)), "long": int(round(lon * 1e7))}
+    frame = {
+        "doNotUse1": 0, "frameType": "advisory",
+        "msgId": ("roadSignID", {"position": anchor, "viewAngle": (0xFFFF, 16),   # 모든 방향
+                                 "mutcdCode": "warning"}),
+        "startYear": year, "startTime": moy, "durationTime": duration_min,
+        "priority": 5, "doNotUse2": 0,
+        "regions": [{"name": "work zone", "anchor": anchor,
+                     "description": ("geometry", {
+                         "direction": (0xFFFF, 16), "extent": "useInstantlyOnly",
+                         "circle": {"center": anchor, "radius": int(radius_m), "units": "meter"}})}],
+        "doNotUse3": 0, "doNotUse4": 0,
+        "content": ("workZone", [{"item": ("itis", ITIS_ROAD_CONSTRUCTION)},
+                                 {"item": ("text", f"{int(speed_kmh)} km/h")}]),
+    }
+    tim = {"msgCnt": msg_cnt, "packetID": packet_id, "dataFrames": [frame]}
+    return encode_frame(TIM_ID, "TravelerInformation", tim)
+
+
+def tim_zones(tim, now=None):
+    """TIM 내용 -> 지금 유효한 공사 구간 목록 [{lat, lon, radius, speed(m/s), text}]"""
+    import re
+    year, moy = minute_of_year(now)
+    out = []
+    for f in tim.get("dataFrames", []):
+        start = f["startTime"]
+        if f.get("startYear", year) == year and not (start <= moy < start + f["durationTime"]):
+            continue
+        kind, items = f["content"]
+        texts = [v for k, v in (i["item"] for i in items) if k == "text"]
+        itis = [v for k, v in (i["item"] for i in items) if k == "itis"]
+        m = re.search(r"(\d+)\s*km/h", " ".join(texts))
+        for r in f.get("regions", []):
+            dk, d = r.get("description", (None, None))
+            if dk != "geometry" or d["circle"]["units"] != "meter":
+                continue
+            c = d["circle"]["center"]
+            out.append({"lat": c["lat"] / 1e7, "lon": c["long"] / 1e7, "radius": d["circle"]["radius"],
+                        "speed": int(m.group(1)) / 3.6 if m else None, "kind": kind,
+                        "construction": ITIS_ROAD_CONSTRUCTION in itis, "text": " ".join(texts)})
+    return out
