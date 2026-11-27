@@ -1,12 +1,22 @@
-# V2X 가상환경 (한국 C-ITS 기준) — RSU 1, OBU 2, SCMS 1
+# V2X 가상환경 (한국 C-ITS 기준) — RSU 1, OBU 2, 보행자 1, 교통센터 1, SCMS 1
 
 국내 C-ITS 표준을 전제로 V2X 통신의 기본 보안(IEEE 1609.2 서명·검증)을 오픈소스 가상환경에서 구현한다.
 모든 메시지는 서명되고, 받는 쪽은 검증을 통과한 메시지만 쓴다.
 인증서는 오픈소스 SCMS인 **OpenSCMS**(IEEE 1609.2.1)가 실제 절차(등록 → 등록인증서 → 응용인증서 → 다운로드)대로 발급한다.
-차(OBU)는 V2X로 받은 신호만 보고 빨간불에 서고 초록불에 출발한다.
+통신 종류는 네 가지다.
+
+| 종류 | 주고받는 것 | 메시지 (국내 표준) |
+| --- | --- | --- |
+| **V2I** 차 ↔ RSU | 차 위치, 신호·교차로 지도 | BSM, SPaT·MAP (KS R 1600-2, -3) |
+| **V2P** 차 ↔ 보행자 | 보행자 스마트폰의 위치 | PSM (KS R 1600-6) |
+| **V2N** 차 ↔ 교통센터 | 휴대폰망으로 위치 보고, 공사 구간 안내 | BSM, TIM (KS R 1600-5) |
+| V2V 차 ↔ 차 | 차 위치 (방송만 하고 아직 쓰지 않음) | BSM |
+
+차(OBU)는 V2X로 받은 정보만 보고 빨간불에 서고, 앞길에 나온 보행자 앞에 서고, 공사 구간에서 속도를 줄인다.
 
 - [처음부터 설치하기](#처음부터-설치하기-windows-기준) — Windows에서 Ubuntu 설치부터 시뮬레이션 실행까지
-- [다시 실행할 때](#다시-실행할-때)
+- [실습: 적용 전·후 비교](#실습-적용-전후-비교) — V2I·V2P·V2N이 실제로 효과가 있는지 확인
+- [다시 실행할 때](#다시-실행할-때) · [예전 버전을 설치했던 경우](#예전-버전을-설치했던-경우-업데이트)
 - [문제 해결](#문제-해결)
 - [전체 구조](#전체-구조) · [폴더 구조](#폴더-구조) · [보안 검증](#보안-검증-ieee-16092)
 
@@ -168,7 +178,7 @@ ls
 
 ## 4단계. SAE J2735 파일 준비
 
-BSM·SPaT·MAP 메시지의 표준 설계도(ASN.1)다. **SAE 라이선스 때문에 저장소에 넣지 않았으므로 디스코드에 첨부하였습니다.(무료)
+BSM·SPaT·MAP·PSM·TIM 메시지의 표준 설계도(ASN.1)다. **SAE 라이선스 때문에 저장소에는 넣지 않았다.** 팀원은 디스코드에 첨부한 파일을 받아 4번부터 하면 되고, 직접 받으려면 아래 1~3번을 따른다(무료).
 
 1. Windows 브라우저에서 https://saemobilus.sae.org 에 가입하고 로그인한다.
 2. 검색창에 `J2735 ASN` 을 검색한다.
@@ -341,7 +351,7 @@ bash ~/v2x-kr-testbed/openscms-patch/apply.sh
 ```
 
 - `binenv install -l`: 이 폴더의 `.binenv.lock`에 적힌 버전으로 minikube·kubectl·helm·skaffold를 설치한다.
-- `apply.sh`: 응용인증서에 **PSID 권한**(OBU=BSM, RSU=SPaT·MAP)을 넣도록 OpenSCMS를 고친다. 원래 OpenSCMS는 이 칸을 비워서 발급한다. 끝에 `적용 완료`가 두 번 나오면 성공. 되돌리기: `bash ~/v2x-kr-testbed/openscms-patch/revert.sh`
+- `apply.sh`: 응용인증서에 **PSID 권한**(차·보행자 단말=BSM·PSM, RSU·교통센터=SPaT·MAP·TIM)을 넣도록 OpenSCMS를 고친다. 원래 OpenSCMS는 이 칸을 비워서 발급한다. 끝에 `적용 완료`가 세 번 나오면 성공. 되돌리기: `bash ~/v2x-kr-testbed/openscms-patch/revert.sh`
 
 ### 7-3. minikube 준비
 
@@ -380,6 +390,7 @@ kubectl get pods
 ```
 
 모든 줄이 `Running`, `1/1` 이면 성공 (처음엔 `ContainerCreating` 일 수 있으니 1~2분 뒤 다시 확인).
+`skaffold run` 끝에 `deployment/ra-deployment failed ... exit code 101`(`Multiple CTL files found`)이 나와도, `ra-deployment`가 저절로 한 번 재시작된 뒤 `Running`이 되면 괜찮다 (OpenSCMS 시작 순서 문제, [문제 해결](#문제-해결) 참고).
 
 ### 7-5. 주소 연결과 인증서 발급 시험
 
@@ -392,7 +403,7 @@ python3 scripts/provision.py
 
 - `openscms.sh start`: ECA·RA·ACA를 `127.0.0.1:8091~8093`에 연결한다. 세 줄 모두 `200`이면 성공. 연결은 뒤에서 계속 유지된다.
 - `build_ieee1609.sh`: OpenSCMS에 들어 있는 IEEE 1609.2 / 1609.2.1 정의(ASN.1)로 Python 변환기(`common/ieee1609_gen.py`)를 만든다.
-- `provision.py`: OBU-01, OBU-02, RSU-01이 실제 SCMS 절차대로 인증서를 받는다. 아래처럼 나오면 성공:
+- `provision.py`: OBU-01, OBU-02, 보행자 PED-01, RSU-01, 교통센터 TMC-01이 실제 SCMS 절차대로 인증서를 받는다. 아래처럼 나오면 성공:
 
 ```
 [OBU-01] 등록 완료 (obu)
@@ -400,7 +411,9 @@ python3 scripts/provision.py
 [OBU-01] 응용인증서 발급  id=...
 [OBU-01] 준비 완료: 인증서 ..., PSID ['0x20'], 발급자 ...
 ...
+[PED-01] 준비 완료: 인증서 ..., PSID ['0x27'], 발급자 ...
 [RSU-01] 준비 완료: 인증서 ..., PSID ['0x8002', '0xe0000017'], 발급자 ...
+[TMC-01] 준비 완료: 인증서 ..., PSID ['0x8003'], 발급자 ...
 신뢰 목록: root(...), ica(...), aca(...)
 ```
 
@@ -413,20 +426,75 @@ cd ~/v2x-kr-testbed
 bash scripts/run.sh --coop
 ```
 
-SUMO 창이 자동으로 뜨고 차 2대가 움직인다. 터미널에는 OBU 화면이 나온다:
+SUMO 창이 자동으로 뜨고 차 2대와 보행자(노란 점)가 움직인다. 터미널에는 OBU·보행자·교통센터 화면이 나온다:
 
 ```
-[OBU-02] 인증서 받음: PSID ['0x20']
-[OBU-02] MAP 수신: 이제 V2X 신호만 보고 주행
-[OBU-02] t= 20.0s 속도  0.00m/s | 신호 RED     | 차로 3 정지선까지   2.1m | 받은 SPaT 199 MAP 20 | 목표속도 0.0
-[OBU-02] t= 46.0s 속도  1.66m/s | 신호 GREEN   | 차로 3 정지선까지   1.4m | 받은 SPaT 458 MAP 47
+[OBU-01] V2N: 교통센터 연결됨 (TLSv1.3)
+[OBU-01] t= 14.0s 속도 13.89m/s | 신호 -  | 교차로 밖 | 보행자 경고: 앞 43.3m 옆 -4.8m | ... | 목표속도 ...
+[OBU-01] t= 19.0s 속도  0.00m/s | 신호 -  | 교차로 밖 | 보행자 경고: 앞  4.1m 옆 +2.5m | ...
+[OBU-02] t= 45.0s 속도  0.00m/s | 신호 RED | 차로 3 정지선까지   2.1m | ... | 목표속도 0.0
+[OBU-02] t= 52.0s 속도  8.33m/s | 신호 -  | 교차로 밖 | 공사 구간 안: 권고 30 km/h (받은 경로 V2N+V2X) | ...
 ```
 
-- **파란 차(OBU-01)** 는 초록불에 통과한다.
-- **빨간 차(OBU-02)** 는 SUMO 신호등은 무시한 채 **V2X로 받은 빨간불만 보고** 정지선 앞에 섰다가, 초록불에 출발한다.
-- 끝나면 `Ctrl + C` 로 모두 종료한다.
+- **파란 차(OBU-01, V2I + V2P)**: 초록불에 교차로를 지난 뒤, 교차로 동쪽에서 **무단횡단하는 보행자**의 PSM을 받고 그 앞에 섰다가, 보행자가 다 건너면 출발한다. SUMO의 차는 이 보행자를 보지 못하게 해 두었으므로(가려진 보행자), 서는 것은 V2P 덕분이다.
+- **빨간 차(OBU-02, V2I + V2N)**: V2X로 받은 빨간불에 정지선 앞에 섰다가 초록불에 출발하고, 교차로 북쪽 **공사 구간**에서는 교통센터가 휴대폰망(V2N)과 RSU(V2X) 두 경로로 보낸 안내대로 30 km/h로 줄인다.
+- 협력주행 없이(`bash scripts/run.sh`) 돌리면 파란 차가 보행자 바로 옆을 그대로 지나가고 보행자 화면에 `위험!`이 찍힌다.
+- 끝나면 `Ctrl + C` 로 모두 종료한다. 자세한 설명: [docs/v2p-v2n.md](docs/v2p-v2n.md)
 
 **설치 완료.**
+
+---
+
+# 실습: 적용 전·후 비교
+
+같은 장면을 V2X 기능을 켜고 끄며 비교한다. 각 실행은 **70초쯤 지나 차가 모두 도착하면 `Ctrl + C`** 로 끄고, 아래 확인 명령을 실행한다.
+(`run.sh`를 다시 실행하면 `logs/`가 새로 만들어지므로 결과는 실행할 때마다 확인한다.)
+
+### 실습 1. V2I — 빨간불 정지 (신호 정보 SPaT·MAP)
+
+```bash
+bash scripts/run.sh --coop        # 켬: 차가 V2X로 받은 신호만 보고 주행
+grep -E "RED" logs/obu2.out | grep "0.00m/s" | head -2
+```
+
+- **켬**: 빨간 차가 `신호 RED | 정지선까지 2.1m`에서 `0.00m/s`로 선다.
+- `bash scripts/run.sh`(협력주행 끔)로 돌리면 차는 SUMO 신호등을 따른다. 즉 V2X 없이도 서는데, 그건 SUMO가 신호등을 "본" 것이다. 협력주행에서는 SUMO 신호등을 무시하게 해 두었으므로 서는 이유가 V2X뿐이다.
+
+### 실습 2. V2P — 무단횡단 보행자 (보행자 메시지 PSM)
+
+```bash
+bash scripts/run.sh --coop        # 켬
+grep "보행자 경고" logs/obu1.out | head -2; grep "보행자 경고" logs/obu1.out | grep -m1 "0.00m/s"; grep 위험 logs/ped.out
+
+bash scripts/run.sh               # 끔 (차가 V2X로 판단하지 않음)
+grep 위험 logs/ped.out
+```
+
+- **켬**: 파란 차가 43 m 앞에서 보행자를 알고 줄이다가 보행자 4 m 앞에서 `0.00m/s`로 선다. `위험!` 줄은 없다.
+- **끔**: `[PED-01] ... 위험! obu1가 0.7m 거리로 지나감 (속도 13.9m/s)`. SUMO의 차는 이 보행자를 못 보게 해 두었다(가려진 보행자).
+- 보행자가 길을 안 건너면(`--coop --no-ped`) 차는 서지 않아야 한다. 차는 "보행자가 내 앞길 위에 있거나 지금 방향·속도로 2초 안에 들어오는가"만 보고 판단한다.
+
+### 실습 3. V2N — 공사 구간 감속 (교통센터 TIM, 휴대폰망 + RSU)
+
+```bash
+bash scripts/run.sh --coop        # 켬
+grep -E "t= *(5[0-9]|6[0-5])\.0s" logs/obu2.out | cut -c1-130
+grep "V2N" logs/obu2.out | head -1; tail -3 logs/center.out
+
+bash scripts/run.sh --coop --no-v2n   # 끔 (교통센터 없음)
+grep -E "t= *(5[0-9]|6[0-5])\.0s" logs/obu2.out | cut -c1-130
+```
+
+- **켬**: 50~60초대 빨간 차 속도가 `8.33m/s`(30 km/h)이고 `공사 구간 안: 권고 30 km/h (받은 경로 V2N+V2X)`가 보인다. 첫 줄에 `V2N: 교통센터 연결됨 (TLSv1.3)`, 센터 화면에 `받은 위치 보고 ...`와 차의 익명 인증서 번호가 보인다.
+- **끔**: 같은 시간에 `13m/s` 정도로 그냥 지나가고 `TIM 0/0`이다.
+
+### 실습 4. 서명 검증 결과
+
+```bash
+for f in logs/*.jsonl; do echo "$f  통과 $(grep -c '"ACCEPT"' $f)  거부 $(grep -c '"REJECT"' $f)"; done
+```
+
+정상 실행이면 모든 파일이 **거부 0**이다. 가짜 메시지를 거부하는지(권한 없는 인증서, 변조, 서명 없음)는 [docs/v2p-v2n.md](docs/v2p-v2n.md)의 "시험으로 확인한 것"에 정리했다.
 
 ---
 
@@ -452,7 +520,9 @@ bash scripts/run.sh --coop
 
 | 명령 | 용도 |
 | --- | --- |
-| `bash scripts/run.sh --coop` | 전체 실행 (V2X 신호로 협력주행) |
+| `bash scripts/run.sh --coop` | 전체 실행 (V2X로 받은 신호·보행자·공사 안내로 협력주행) |
+| `bash scripts/run.sh --coop --no-ped` | 보행자가 길을 건너지 않음 |
+| `bash scripts/run.sh --coop --no-v2n` | 교통센터 없이 (V2N 끔) |
 | `bash scripts/run.sh` | 전체 실행 (차는 SUMO 신호를 따름, V2X 메시지만 주고받음) |
 | `sumo-gui -c sumo/intersection.sumocfg` | SUMO 화면만 보기 (V2X 없음) |
 | 브라우저 `https://127.0.0.1` | V2X-Hub 웹 관리 화면 (v2xadmin) |
@@ -464,6 +534,29 @@ bash scripts/run.sh --coop
 **출력 위치**: `logs/*.out`(각 프로그램 화면), `logs/*.jsonl`(메시지마다 JSON 한 줄), `~/v2xhub_data/logs/json/`(V2X-Hub가 받은 BSM 기록)
 
 **VS Code 처음 쓸 때**: Windows에 VS Code를 설치하고, 확장(`Ctrl+Shift+X`)에서 **WSL**(Microsoft)을 설치한 뒤 `code .` 로 연다. 왼쪽 아래에 `WSL: Ubuntu-24.04` 가 보여야 한다. "Restricted Mode" 가 뜨면 **Manage → Trust** 를 누르고, **Python**·**Pylance** 확장을 "Install in WSL" 로 설치한다.
+
+---
+
+# 예전 버전을 설치했던 경우 (업데이트)
+
+이미 설치해 둔 PC에서 새 버전(OpenSCMS, V2P, V2N)을 받을 때:
+
+```bash
+cd ~/v2x-kr-testbed && git checkout master && git pull
+```
+
+그다음 어디까지 설치했느냐에 따라:
+
+- **7단계(OpenSCMS)를 아직 안 했다** → [7단계](#7단계-openscms-설치-scms-인증-서버)부터 하면 된다.
+- **7단계를 이미 했다** (수정본 일부만 적용된 상태):
+  ```bash
+  bash ~/v2x-kr-testbed/openscms-patch/apply.sh
+  cd ~/openscms/OpenSCMS && minikube start --memory=8g --cpus=4 && skaffold run
+  kubectl rollout restart deployment/ra-deployment
+  sleep 60 && kubectl get pods
+  cd ~/v2x-kr-testbed && bash scripts/openscms.sh start && bash scripts/build_ieee1609.sh && python3 scripts/provision.py
+  ```
+  `apply.sh`에서 `이미 적용됨`은 그대로 두고 새 것만 적용한다. `provision.py`에 `PED-01 ... ['0x27']`, `TMC-01 ... ['0x8003']`가 나오면 끝.
 
 ---
 
@@ -490,7 +583,11 @@ bash scripts/run.sh --coop
 | `HTTP 400 400-21` (unregistered) | OpenSCMS를 새로 설치해서 예전 등록이 없어짐 | `python3 scripts/provision.py --reset` |
 | `ModuleNotFoundError: common.ieee1609_gen` | 7-5를 안 함 | `bash scripts/build_ieee1609.sh` |
 | 그 밖의 OpenSCMS 문제 | | [docs/openscms.md](docs/openscms.md) 문제 해결 |
-| `Address already in use` | 이전 실행 프로그램이 남아 있음 | `pkill -f "radio/air.py\|rsu-gateway\|rsu-signer\|tsc/tsc.py\|obu/obu.py"; pkill sumo-gui` 후 다시 실행 |
+| `[PED-01] 실패: ... 400-30` 또는 `[TMC-01] 실패: ... 400-30` | OpenSCMS가 PSM·TIM 권한을 아직 허용하지 않음 | `bash openscms-patch/apply.sh` 후 `cd ~/openscms/OpenSCMS && skaffold run && kubectl rollout restart deployment/ra-deployment` |
+| OBU 화면에 `TIM 0/0` | 교통센터가 꺼져 있음 | `logs/center.out` 확인 |
+| `skaffold run`에서 `ra-deployment failed ... exit code 101`, 로그에 `Multiple CTL files found` | RA 프로그램 두 개가 동시에 켜지며 신뢰 목록을 두 번 적음 (OpenSCMS 문제) | 1분 기다려 `kubectl get pods`에서 `ra-deployment`가 `Running`이면 해결. 계속 `CrashLoopBackOff`면 `kubectl scale deployment/ra-deployment --replicas=0; sleep 5; kubectl scale deployment/ra-deployment --replicas=1` |
+| 보행자(노란 점)가 SUMO 화면에 안 보임 | 화면이 너무 작음 | SUMO 화면에서 교차로 동쪽을 확대 |
+| `Address already in use` | 이전 실행 프로그램이 남아 있음 | `pkill -f "radio/air.py\|rsu-gateway\|rsu-signer\|tsc/tsc.py\|obu/obu.py\|ped/ped.py\|center/center.py"; pkill sumo-gui` 후 다시 실행 |
 | VS Code에서 만든 파일이 0바이트 | 저장 안 함 | `Ctrl + S` |
 
 ---
@@ -498,19 +595,22 @@ bash scripts/run.sh --coop
 # 전체 구조
 
 ```
-          OpenSCMS (minikube): ECA · RA · ACA · LA×2 · CAM  (루트 → ICA 아래)
-                 │  IEEE 1609.2.1 (HTTP, 요청은 RA 공개키로 암호화)
-                 ┌────────┼────────┐
-                 ▼        ▼        ▼
- SUMO ──위치──▶ OBU-01  OBU-02    RSU-01 = gateway.py + V2X-Hub + signer.py
- (교차로·차)      │ ▲      │ ▲         ▲ BSM(검증)      │ SPaT·MAP(서명)
-      ▲          │ │      │ │         │                ▼
-      └─정지/출발┘ └──────┴─┴═══ 가상 무선 (air.py) ═══┘
- SUMO 신호 ──▶ tsc.py ──▶ V2X-Hub SPaT 플러그인
+        OpenSCMS (minikube): 루트 → ICA → ECA·ACA, RA      ← 모든 장치가 처음에 인증서를 받음 (IEEE 1609.2.1)
+   ┌──────────────┬──────────────┬─────────────────────┬──────────────┐
+ OBU-01, OBU-02   PED-01         RSU-01                TMC-01
+ 차 (obu.py)      보행자 폰        gateway.py             교통센터
+                 (ped.py)       + V2X-Hub + signer.py  (center.py)
+
+ 가상 무선 (V2X, air.py)    차 ⇄ RSU: BSM / SPaT·MAP     보행자 → 차·RSU: PSM     RSU → 차: TIM
+ 휴대폰망 (V2N, TLS 1.3)    차 ⇄ 교통센터: BSM(위치 보고) / TIM(공사 안내)
+ 유선 (RSU 백홀)            교통센터 → RSU: TIM          신호제어기 tsc.py → V2X-Hub: TSCBM
+ SUMO                      차·보행자 움직임 ↔ obu.py·ped.py,  신호 → tsc.py
 ```
 
 - **차 → RSU**: OBU가 BSM을 서명해 방송 → RSU 게이트웨이가 검증 → V2X-Hub
 - **RSU → 차**: V2X-Hub가 SPaT·MAP 생성 → RSU 서명기가 서명해 방송 → OBU가 검증 → 신호에 따라 정지·출발
+- **보행자 → 차 (V2P)**: 보행자 스마트폰이 PSM을 서명해 직접 방송 → OBU가 검증 → 앞길 위(또는 2초 안에 들어올) 보행자면 그 앞에 정지. RSU도 받아 검증한 뒤 V2X-Hub로 넘긴다.
+- **차 ↔ 교통센터 (V2N)**: OBU가 휴대폰망(TLS 1.3)으로 1초마다 서명된 BSM을 올리고, 센터가 서명한 공사 안내 TIM을 내려받는다. 센터는 같은 TIM을 RSU에도 넘겨 직접통신으로도 방송한다(하이브리드). 어느 경로로 와도 OBU는 똑같이 검증한다.
 - V2X-Hub는 RSU의 메시지 처리기이며 서명·검증 기능이 없어서, 앞에 검증 게이트웨이, 뒤에 서명기를 둔다.
 - **인증서**: 각 장치가 OpenSCMS에 등록 → 등록인증서(ECA) → 응용인증서 요청(RA, 암호화) → 다운로드. 응용인증서는 ACA가 발급하고 장치 이름이 없는 익명 인증서다.
 - Docker 위에는 V2X-Hub와 OpenSCMS(minikube)가 있고, 나머지는 Ubuntu에서 일반 프로그램으로 실행된다 (`scripts/run.sh`가 한 번에 실행).
@@ -526,32 +626,41 @@ bash scripts/run.sh --coop
 | 인증 체계 | SCMS (IEEE 1609.2.1-2022) | 자동차안전학회지 2021 | OpenSCMS: 루트 → ICA → ECA·ACA, RA — `common/scms_client.py` |
 | RSU 소프트웨어 | V2X-Hub (미국 교통부) | V2X-Hub README | V2X-Hub 8.1.0 (Docker) |
 | 신호제어기 → RSU | NTCIP 1202 | | TSCBM — `tsc/tsc.py` |
+| V2P 메시지 | PSM | KS R 1600-6 | 보행자 단말이 직접 방송, PSID 0x27 — `ped/ped.py` |
+| V2N 방식 | 하이브리드 (V2X + 상용망) | 국토부 2022.9.23 | 휴대폰망(TCP로 흉내) + RSU 두 경로 — `center/center.py`, `common/v2n.py` |
+| V2N 메시지 | 여행자 정보 TIM | KS R 1600-5 | 공사 구간 안내, PSID 0x8003 |
+| 센터 통신 보호 | TLS 보안 채널 | TTAK.KO-12.0432 | TLS 1.3 + 메시지 서명 유지 |
 
 # 폴더 구조
 
 ```
-obu/obu.py               OBU (같은 코드로 OBU-01, OBU-02). BSM 서명·방송, SPaT·MAP 검증, 협력주행
-rsu-gateway/gateway.py   RSU 수신: BSM 검증 → V2X-Hub (UDP 26789)
-rsu-signer/signer.py     RSU 송신: V2X-Hub 출력(UDP 1516) → 서명 → 방송
+obu/obu.py               OBU (같은 코드로 OBU-01, OBU-02). BSM 서명·방송, SPaT·MAP·PSM·TIM 검증, 협력주행, 휴대폰망 접속
+ped/ped.py               보행자 스마트폰 (PED-01): SUMO 보행자 각본 + PSM 서명·방송 (V2P)
+center/center.py         교통센터 (TMC-01): 휴대폰망 서버(TLS), 위치 보고 수신, 공사 안내 TIM (V2N)
+rsu-gateway/gateway.py   RSU 수신: BSM·PSM 검증 → V2X-Hub (UDP 26789)
+rsu-signer/signer.py     RSU 송신: V2X-Hub 출력(UDP 1516) → 서명 → 방송. 센터가 서명한 TIM(UDP 1517)은 확인 후 그대로 방송
 tsc/tsc.py               가상 신호제어기: SUMO 신호 → TSCBM → V2X-Hub (UDP 6053)
 tsc/make_map.py          SUMO 도로 → J2735 MAP 파일
 radio/air.py             가상 무선 채널 (방송, 손실·지연 옵션)
 common/                  공통 부품
-  j2735.py               BSM·SPaT·MAP 생성·해석
+  j2735.py               BSM·SPaT·MAP·PSM·TIM 생성·해석
+  v2n.py                 휴대폰망 흉내: TLS 1.3 연결, 시험용 TLS 인증서 생성
+  geo.py                 위치 계산 (내 진행 방향 기준 앞·옆 거리)
   sec1609.py             IEEE 1609.2 인증서·서명·검증 (검증 4단계)
   scms_client.py         IEEE 1609.2.1 단말 쪽: 등록, 등록인증서, 응용인증서 요청·다운로드
   scms_crypto.py         ECIES·AES-CCM 암호화, 암묵적 인증서 키 복원
-  identity.py            장치별 인증서·신뢰 목록 준비 (OBU=BSM, RSU=SPaT·MAP)
+  identity.py            장치별 인증서·신뢰 목록 준비 (OBU=BSM, 보행자=PSM, RSU=SPaT·MAP, 센터=TIM)
   wsmp.py, psid.py       메시지 봉투, 메시지 종류 번호
   intersection.py        MAP·SPaT 해석 (차로, 정지선 거리, 신호 색)
   radio.py, v2xlog.py    가상 무선 접속, 메시지별 JSON 로그
-sumo/                    사거리 1개(판교 부근 가상 좌표), 차량 2대
+sumo/                    사거리 1개(판교 부근 가상 좌표), 차량 2대 (보행자는 ped.py가 추가)
 scripts/run.sh           전체 실행
 scripts/openscms.sh      OpenSCMS 켜기(minikube)·주소 연결·상태 확인
 scripts/provision.py     OBU·RSU 인증서 받기 (OpenSCMS)
 scripts/build_ieee1609.sh IEEE 1609.2/1609.2.1 ASN.1 → Python 변환기
 openscms-patch/          OpenSCMS 수정본 (응용인증서 PSID 권한, RA의 장치별 PSID 정책)
 ee-data/                 장치 키·인증서 (Git 제외)
+center/tls/              교통센터 TLS 인증서·키 (처음 실행 때 생성, Git 제외)
 scripts/setup_ubuntu.sh  개발 도구 설치 (2단계를 한 번에)
 scripts/build_j2735.sh   SAE J2735 ASN.1 → Python 변환기
 v2xhub-config/           V2X-Hub 플러그인 설정 기록
@@ -560,12 +669,12 @@ docs/                    계획서, 단계별 기록
 
 # 보안 검증 (IEEE 1609.2)
 
-받는 쪽(RSU 게이트웨이, OBU)은 아래 순서로 확인하고, 하나라도 실패하면 버리고 기록한다.
+받는 쪽(RSU 게이트웨이·서명기, OBU, 교통센터)은 아래 순서로 확인하고, 하나라도 실패하면 버리고 기록한다. 직접통신(V2X)으로 받든 휴대폰망(V2N)으로 받든 같다.
 
 | 단계 | 검사 | 실패 이유 |
 | --- | --- | --- |
 | 1 | 서명 | UNSIGNED, BAD_SIGNATURE |
-| 2 | 권한: 메시지 PSID가 인증서에 있는가 (OBU=BSM, RSU=SPaT·MAP) | NO_PERMISSION |
+| 2 | 권한: 메시지 PSID가 인증서에 있는가 (OBU=BSM, 보행자=PSM, RSU=SPaT·MAP, 센터=TIM) | NO_PERMISSION |
 | 3 | 유효기간 | CERT_EXPIRED |
 | 4 | 발급 체인: 신뢰하는 루트까지 이어지는가 | UNKNOWN_ISSUER |
 
@@ -581,6 +690,7 @@ docs/                    계획서, 단계별 기록
 | 3, 3-1 | RSU SPaT·MAP 방송, 협력주행 | [docs/step3.md](docs/step3.md) |
 | 4~6 | 서명·검증 (처음에는 자체 CA) | [docs/step4-6.md](docs/step4-6.md) |
 | 8 | OpenSCMS로 교체 (IEEE 1609.2.1) | [docs/openscms.md](docs/openscms.md) |
+| 9 | V2P(보행자), V2N(교통센터·하이브리드) | [docs/v2p-v2n.md](docs/v2p-v2n.md) |
 
 # 단순화한 점과 앞으로
 
@@ -588,6 +698,8 @@ docs/                    계획서, 단계별 기록
 - SCMS 통신은 HTTP (요청 내용은 1609.2.1대로 서명·암호화되지만, 전송 구간 TLS와 OAuth 토큰은 생략)
 - 루트 인증서는 장치 출고 때 넣는 것으로 보고, OpenSCMS 폴더에서 한 번 복사해 쓴다 (`ee-data/trust/root.cert`)
 - RSU·OBU는 일반 프로그램으로 실행 (V2X-Hub와 OpenSCMS만 컨테이너)
+- 보행자는 각본대로 움직이는 1명이고, SUMO 화면에는 점(POI)으로 표시한다. 휴대폰망은 내 PC 안의 TCP 연결로 흉내 내고, 교통센터 → RSU 구간(UDP)은 보호하지 않는다
+- 차는 다른 차의 BSM을 받지만 아직 쓰지 않는다 (V2V 응용은 없음)
 - 2차 과제(추가 보안): 재전송 검사, 시각 교차 검사, SPaT 개연성 검사, 위치 대조, 속도 제한, CRL, 인증서 자동 갱신·익명 교체, HSM, HTTPS, Docker 네트워크 분리 + iptables
 
 # 사용한 오픈소스
